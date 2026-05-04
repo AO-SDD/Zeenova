@@ -14,10 +14,13 @@ def _service(
     *,
     binance_pairs: set[str] | None = None,
     bybit_pairs: set[str] | None = None,
+    mexc_pairs: set[str] | None = None,
     binance_ticker: dict[str, float | None] | None = None,
     bybit_ticker: dict[str, float | None] | None = None,
+    mexc_ticker: dict[str, float | None] | None = None,
     binance_klines: list[list[float]] | None = None,
     bybit_klines: list[list[float]] | None = None,
+    mexc_klines: list[list[float]] | None = None,
     marketcap: float | None = 12345.0,
 ) -> CoinService:
     bn = AsyncMock()
@@ -32,11 +35,17 @@ def _service(
     bb.fetch_klines = AsyncMock(return_value=bybit_klines)
     bb.aclose = AsyncMock()
 
+    mx = AsyncMock()
+    mx.has_pair = AsyncMock(side_effect=lambda s: s in (mexc_pairs or set()))
+    mx.fetch_ticker = AsyncMock(return_value=mexc_ticker)
+    mx.fetch_klines = AsyncMock(return_value=mexc_klines)
+    mx.aclose = AsyncMock()
+
     mc = AsyncMock()
     mc.fetch_marketcap = AsyncMock(return_value=marketcap)
     mc.aclose = AsyncMock()
 
-    return CoinService(binance=bn, bybit=bb, marketcap=mc)
+    return CoinService(binance=bn, bybit=bb, mexc=mx, marketcap=mc)
 
 
 @pytest.mark.asyncio
@@ -51,6 +60,13 @@ async def test_resolve_falls_back_to_bybit() -> None:
     svc = _service(binance_pairs=set(), bybit_pairs={"MEGA"})
     ref = await svc.resolve("MEGA")
     assert ref == CoinRef(symbol="MEGA", pair="MEGAUSDT", source="bybit")
+
+
+@pytest.mark.asyncio
+async def test_resolve_falls_back_to_mexc() -> None:
+    svc = _service(binance_pairs=set(), bybit_pairs=set(), mexc_pairs={"BILL"})
+    ref = await svc.resolve("BILL")
+    assert ref == CoinRef(symbol="BILL", pair="BILLUSDT", source="mexc")
 
 
 @pytest.mark.asyncio
@@ -100,6 +116,33 @@ async def test_candles_dispatches_to_correct_source() -> None:
         ref=CoinRef(symbol="MEGA", pair="MEGAUSDT", source="bybit"), timeframe=tf
     )
     assert out is rows
+
+
+@pytest.mark.asyncio
+async def test_candles_dispatches_to_mexc() -> None:
+    rows = [[float(i), 1.0, 2.0, 0.5, 1.5] for i in range(5)]
+    svc = _service(mexc_klines=rows)
+    tf = get_timeframe("15m")
+    out = await svc.candles(
+        ref=CoinRef(symbol="BILL", pair="BILLUSDT", source="mexc"), timeframe=tf
+    )
+    assert out is rows
+
+
+@pytest.mark.asyncio
+async def test_market_dispatches_to_mexc() -> None:
+    ticker: dict[str, float | None] = {
+        "price": 0.038,
+        "change_pct": 6.7,
+        "high": 0.042,
+        "low": 0.005,
+        "volume_quote": 19_900_000.0,
+    }
+    svc = _service(mexc_ticker=ticker, marketcap=None)
+    md = await svc.market(CoinRef(symbol="BILL", pair="BILLUSDT", source="mexc"))
+    assert md.price_usd == 0.038
+    assert md.source == "mexc"
+    assert md.market_cap_usd is None
 
 
 @pytest.mark.asyncio

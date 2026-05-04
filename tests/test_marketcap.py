@@ -125,11 +125,11 @@ async def test_paprika_picks_lowest_rank_per_symbol() -> None:
             "type": "coin",
         },
         {
-            "id": "some-token",
-            "symbol": "FOO",
-            "rank": 200,
+            "id": "fiat-usd",
+            "symbol": "USD",
+            "rank": 1,
             "is_active": True,
-            "type": "token",  # filtered out (not "coin")
+            "type": "fiat",  # filtered out
         },
     ]
 

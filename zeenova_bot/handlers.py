@@ -136,7 +136,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     tf = get_timeframe(parts[1])
     source = parts[2]
     symbol = parts[3].upper()
-    if source not in {"binance", "bybit"}:
+    if source not in {"binance", "bybit", "mexc"}:
         return
     ref = CoinRef(symbol=symbol, pair=f"{symbol}USDT", source=source)
 
@@ -196,7 +196,8 @@ async def _send_card(
     ref = await service.resolve(symbol)
     if ref is None:
         await msg.reply_text(
-            f"Couldn't find a USDT pair for <b>{escape(symbol.upper())}</b> on Binance or Bybit.",
+            "Couldn't find a USDT pair for "
+            f"<b>{escape(symbol.upper())}</b> on Binance, Bybit, or MEXC.",
             parse_mode=ParseMode.HTML,
         )
         return

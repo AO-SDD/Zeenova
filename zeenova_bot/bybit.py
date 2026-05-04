@@ -57,6 +57,14 @@ class BybitClient:
         now = time.time()
         if self._pairs and now - self._pairs_loaded_at < max_age_s:
             return
+        # If we've already failed once, back off so we don't spam logs every
+        # request when Bybit's CDN geo-blocks the host.
+        if (
+            not self._pairs
+            and self._pairs_loaded_at
+            and now - self._pairs_loaded_at < max_age_s
+        ):
+            return
         async with self._pairs_lock:
             now = time.time()
             if self._pairs and now - self._pairs_loaded_at < max_age_s:
@@ -66,8 +74,22 @@ class BybitClient:
                     "/v5/market/instruments-info",
                     params={"category": "spot"},
                 )
-            except (httpx.HTTPError, ValueError, RuntimeError):
-                logger.warning("Bybit: failed to load instruments-info", exc_info=True)
+            except httpx.HTTPStatusError as exc:
+                # Bybit's CDN returns 403 from blocked regions — log once
+                # at info level and remember the attempt so we don't
+                # retry on every lookup.
+                if exc.response is not None and exc.response.status_code == 403:
+                    logger.info(
+                        "Bybit: API unreachable from this region (HTTP 403); "
+                        "skipping Bybit fallback"
+                    )
+                else:
+                    logger.warning("Bybit: failed to load instruments-info: %s", exc)
+                self._pairs_loaded_at = now
+                return
+            except (httpx.HTTPError, ValueError, RuntimeError) as exc:
+                logger.warning("Bybit: failed to load instruments-info: %s", exc)
+                self._pairs_loaded_at = now
                 return
             pairs: set[str] = set()
             for inst in result.get("list", []):

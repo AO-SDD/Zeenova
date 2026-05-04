@@ -1,4 +1,4 @@
-"""Composes Binance, Bybit, and the marketcap helper into a single API."""
+"""Composes Binance, Bybit, MEXC, and the marketcap helper into a single API."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Protocol
 
 from .binance import BinanceClient
 from .bybit import BybitClient
+from .mexc import MexcClient
 from .timeframes import Timeframe
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ class CoinRef:
 
     symbol: str  # uppercase, e.g. ``BTC``
     pair: str  # e.g. ``BTCUSDT``
-    source: str  # ``"binance"`` or ``"bybit"``
+    source: str  # ``"binance"``, ``"bybit"``, or ``"mexc"``
 
 
 @dataclass(slots=True)
@@ -61,19 +62,27 @@ class CoinService:
         self,
         binance: BinanceClient,
         bybit: BybitClient,
+        mexc: MexcClient,
         marketcap: MarketcapSource,
     ) -> None:
         self.binance = binance
         self.bybit = bybit
+        self.mexc = mexc
         self.marketcap = marketcap
 
     async def aclose(self) -> None:
         await self.binance.aclose()
         await self.bybit.aclose()
+        await self.mexc.aclose()
         await self.marketcap.aclose()
 
     async def resolve(self, symbol: str) -> CoinRef | None:
-        """Resolve a symbol to the first exchange that lists ``<symbol>USDT``."""
+        """Resolve a symbol to the first exchange that lists ``<symbol>USDT``.
+
+        Order: Binance (deepest liquidity) → Bybit → MEXC. MEXC has the
+        widest catalogue of newly listed / low-cap coins so it acts as
+        a long tail fallback.
+        """
         s = _clean_symbol(symbol)
         if not s:
             return None
@@ -81,6 +90,8 @@ class CoinService:
             return CoinRef(symbol=s, pair=f"{s}USDT", source="binance")
         if await self.bybit.has_pair(s):
             return CoinRef(symbol=s, pair=f"{s}USDT", source="bybit")
+        if await self.mexc.has_pair(s):
+            return CoinRef(symbol=s, pair=f"{s}USDT", source="mexc")
         return None
 
     async def market(self, ref: CoinRef) -> MarketData:
@@ -111,6 +122,8 @@ class CoinService:
             rows = await self.binance.fetch_klines(ref.symbol, timeframe.binance_interval)
         elif ref.source == "bybit":
             rows = await self.bybit.fetch_klines(ref.symbol, timeframe.code)
+        elif ref.source == "mexc":
+            rows = await self.mexc.fetch_klines(ref.symbol, timeframe.binance_interval)
         else:  # pragma: no cover - guarded by resolve()
             rows = None
         if not rows or len(rows) < 2:
@@ -122,6 +135,8 @@ class CoinService:
             return await self.binance.fetch_ticker(ref.symbol)
         if ref.source == "bybit":
             return await self.bybit.fetch_ticker(ref.symbol)
+        if ref.source == "mexc":
+            return await self.mexc.fetch_ticker(ref.symbol)
         return None
 
 

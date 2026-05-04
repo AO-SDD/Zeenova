@@ -14,6 +14,7 @@ from .coinpaprika import CoinPaprikaClient
 from .config import load_settings
 from .handlers import build_application
 from .marketcap import MarketcapAggregator
+from .mexc import MexcClient
 from .services import CoinService
 
 
@@ -33,10 +34,13 @@ def main() -> None:
 
     binance = BinanceClient()
     bybit = BybitClient()
+    mexc = MexcClient()
     paprika = CoinPaprikaClient()
     coingecko = CoinGeckoMarketcap(api_key=settings.coingecko_api_key)
     marketcap = MarketcapAggregator(paprika, coingecko)
-    service = CoinService(binance=binance, bybit=bybit, marketcap=marketcap)
+    service = CoinService(
+        binance=binance, bybit=bybit, mexc=mexc, marketcap=marketcap
+    )
 
     app = build_application(settings, service)
 
@@ -48,7 +52,7 @@ def main() -> None:
 
     log.info(
         "Zeenova bot starting up "
-        "(sources: Binance + Bybit, marketcap: CoinPaprika -> CoinGecko cached)"
+        "(sources: Binance + Bybit + MEXC, marketcap: CoinPaprika -> CoinGecko cached)"
     )
     app.run_polling(allowed_updates=["message", "callback_query"])
 

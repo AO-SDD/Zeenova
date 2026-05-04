@@ -98,7 +98,10 @@ class CoinPaprikaClient:
                     continue
                 if not row.get("is_active", False):
                     continue
-                if row.get("type") != "coin":
+                # Paprika tags layer-1 chains as "coin" and ERC-20 / SPL
+                # / etc. as "token". We want both — otherwise meme/DeFi
+                # tokens like PEPE, WIF, and BILL are excluded.
+                if row.get("type") not in {"coin", "token"}:
                     continue
                 sym = (row.get("symbol") or "").strip().upper()
                 cid = (row.get("id") or "").strip()
