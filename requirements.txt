@@ -1,0 +1,8 @@
+python-telegram-bot[rate-limiter]==21.6
+httpx==0.27.2
+mplfinance==0.12.10b0
+matplotlib==3.9.2
+pandas==2.2.3
+pydantic==2.9.2
+pydantic-settings==2.6.0
+cachetools==5.5.0

@@ -1,0 +1,7 @@
+services:
+  bot:
+    build: .
+    image: zeenova-bot:latest
+    restart: unless-stopped
+    env_file:
+      - .env

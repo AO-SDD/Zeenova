@@ -1,0 +1,87 @@
+"""Tests for the textual price-card formatter."""
+
+from __future__ import annotations
+
+from zeenova_bot.card import _fmt_change, _fmt_compact, _fmt_price, render_price_card
+from zeenova_bot.coingecko import MarketData
+
+
+def _md(**overrides: object) -> MarketData:
+    base: dict[str, object] = dict(
+        id="megaeth",
+        symbol="MEGA",
+        name="MegaETH",
+        price_usd=0.1261,
+        price_change_pct_24h=1.6,
+        high_24h=0.1352,
+        low_24h=0.1182,
+        market_cap_usd=1_270_000_000,
+        total_volume_usd_24h=20_570_000,
+        image_url=None,
+    )
+    base.update(overrides)
+    return MarketData(**base)  # type: ignore[arg-type]
+
+
+def test_fmt_price_picks_precision_by_magnitude() -> None:
+    assert _fmt_price(12345.6789).startswith("$12,345.")
+    assert _fmt_price(1.23) == "$1.2300"
+    assert _fmt_price(0.0123) == "$0.0123"
+    assert _fmt_price(0.00012345) == "$0.000123"
+    assert _fmt_price(0.00000001) == "$0.00000001"
+
+
+def test_fmt_compact_handles_scales_and_none() -> None:
+    assert _fmt_compact(None) == "—"
+    assert _fmt_compact(1_270_000_000) == "1.27B"
+    assert _fmt_compact(20_570_000) == "20.57M"
+    assert _fmt_compact(1_500) == "1.50K"
+    assert _fmt_compact(42) == "42.00"
+
+
+def test_fmt_change_signs() -> None:
+    assert _fmt_change(None) == "—"
+    assert _fmt_change(1.6) == "+1.60%"
+    assert _fmt_change(-3.42) == "-3.42%"
+
+
+def test_render_card_contains_expected_pieces() -> None:
+    text = render_price_card(
+        _md(),
+        brand_name="Zeenova",
+        channel_url="https://t.me/ox_zeen",
+        group_url="https://t.me/blockzeen",
+    )
+    assert "MEGAUSDT" in text
+    assert "Price:" in text
+    assert "+1.60%" in text
+    assert "1.27B" in text
+    assert "20.57M USDT" in text
+    assert "https://t.me/ox_zeen" in text
+    assert "https://t.me/blockzeen" in text
+
+
+def test_render_card_uses_red_dot_when_negative() -> None:
+    text = render_price_card(
+        _md(price_change_pct_24h=-2.5),
+        brand_name="Zeenova",
+        channel_url="https://t.me/ox_zeen",
+        group_url="https://t.me/blockzeen",
+    )
+    assert text.startswith("🔴")
+
+
+def test_render_card_handles_missing_fields() -> None:
+    text = render_price_card(
+        _md(
+            price_change_pct_24h=None,
+            high_24h=None,
+            low_24h=None,
+            market_cap_usd=None,
+            total_volume_usd_24h=None,
+        ),
+        brand_name="Zeenova",
+        channel_url="https://t.me/ox_zeen",
+        group_url="https://t.me/blockzeen",
+    )
+    assert text.count("—") >= 5
