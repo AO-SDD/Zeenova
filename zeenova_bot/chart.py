@@ -140,6 +140,14 @@ def render_candles(
         for spine in a.spines.values():
             spine.set_visible(False)
 
+    # mplfinance auto-pads the x-axis ~5-10% beyond the data range, leaving a
+    # visible empty strip at the left edge. Pin the limits to the actual data
+    # so the first candle hugs the left boundary. We use a tiny half-candle
+    # margin on each side so the outermost candles aren't clipped in half.
+    n = len(df)
+    for a in axes:
+        a.set_xlim(-0.5, n - 0.5)
+
     # Header line: "SYMBOL | TIMEFRAME | brand"
     header = f"{symbol.upper()} | {timeframe.label} | {brand_name}"
     ax.text(
