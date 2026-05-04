@@ -16,6 +16,7 @@ import matplotlib
 matplotlib.use("Agg")  # noqa: E402
 
 import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.ticker as mticker  # noqa: E402
 import mplfinance as mpf  # noqa: E402
 import pandas as pd  # noqa: E402
 
@@ -30,6 +31,25 @@ _UP = "#26a69a"
 _DOWN = "#ef5350"
 _TEXT = "#d6deeb"
 _ACCENT = "#5a90c9"
+
+
+def _format_price(value: float) -> str:
+    """Render ``value`` with enough precision for the magnitude.
+
+    Big tickers like BTC at ~80,500 get a thousands separator and 2 dp
+    so we always show "80,500.00" rather than "80500"; mid-cap tickers
+    keep 4 dp; sub-dollar tokens keep up to 6 dp without losing zeros.
+    """
+    if value == 0:
+        return "0.00"
+    abs_v = abs(value)
+    if abs_v >= 1000:
+        return f"{value:,.2f}"
+    if abs_v >= 1:
+        return f"{value:,.4f}"
+    if abs_v >= 0.01:
+        return f"{value:,.5f}"
+    return f"{value:,.8f}".rstrip("0").rstrip(".")
 
 
 def _build_style() -> dict[str, object]:
@@ -89,8 +109,8 @@ def render_candles(
         type="candle",
         style=style,
         returnfig=True,
-        figsize=(8.5, 5.0),
-        tight_layout=True,
+        figsize=(9.0, 5.0),
+        tight_layout=False,
         ylabel="",
         xrotation=0,
         update_width_config={"candle_linewidth": 0.9, "candle_width": 0.6},
@@ -101,6 +121,19 @@ def render_candles(
     ax.yaxis.tick_right()
     ax.yaxis.set_label_position("right")
 
+    # Adaptive price formatter: thousands separator + magnitude-aware
+    # precision so BTC shows "80,500.00" and BILL shows "0.038790".
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _p: _format_price(v)))
+    ax.tick_params(axis="y", pad=2, labelsize=10)
+
+    # mplfinance leaves a wide ~18% margin on every side. Override the
+    # axes position(s) to fill the canvas almost edge-to-edge so the
+    # candles use the full width. The right margin is just wide enough
+    # to fit a "90,000.00"-style tick label without clipping.
+    plot_box = (0.012, 0.085, 0.895, 0.905)
+    for a in axes:
+        a.set_position(plot_box)
+
     # Header line: "SYMBOL | TIMEFRAME | brand"
     header = f"{symbol.upper()} | {timeframe.label} | {brand_name}"
     ax.text(
@@ -109,21 +142,21 @@ def render_candles(
         header,
         transform=ax.transAxes,
         color=_ACCENT,
-        fontsize=10,
+        fontsize=11,
         fontweight="bold",
         va="top",
         ha="left",
     )
 
-    # Faint Zeenova watermark across the middle
+    # Big translucent Zeenova watermark across the middle
     ax.text(
         0.5,
         0.5,
         brand_name.upper(),
         transform=ax.transAxes,
         color=_TEXT,
-        alpha=0.08,
-        fontsize=46,
+        alpha=0.085,
+        fontsize=110,
         fontweight="bold",
         ha="center",
         va="center",
@@ -145,7 +178,7 @@ def render_candles(
     )
 
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor=_BG, dpi=150, bbox_inches="tight")
+    fig.savefig(buf, format="png", facecolor=_BG, dpi=150)
     plt.close(fig)
     return buf.getvalue()
 
