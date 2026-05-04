@@ -98,7 +98,15 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await msg.reply_text("Usage: /p SYMBOL  (e.g. /p BTC)")
         return
     symbol = args[0].lstrip("$").strip()
-    await _send_card(update, context, symbol=symbol, timeframe=DEFAULT_TIMEFRAME)
+    # Explicit command → keep a short "not found" reply so users know the
+    # command was received.
+    await _send_card(
+        update,
+        context,
+        symbol=symbol,
+        timeframe=DEFAULT_TIMEFRAME,
+        notify_if_unknown=True,
+    )
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -121,7 +129,15 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     symbol = match.group(1)
     if symbol.lower() in _STOP_WORDS:
         return
-    await _send_card(update, context, symbol=symbol, timeframe=DEFAULT_TIMEFRAME)
+    # Free-text matches stay silent on misses — a stray word in a chat
+    # shouldn't generate a "not found" reply that pollutes the room.
+    await _send_card(
+        update,
+        context,
+        symbol=symbol,
+        timeframe=DEFAULT_TIMEFRAME,
+        notify_if_unknown=False,
+    )
 
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -184,6 +200,7 @@ async def _send_card(
     *,
     symbol: str,
     timeframe: Timeframe,
+    notify_if_unknown: bool,
 ) -> None:
     msg = update.effective_message
     chat = update.effective_chat
@@ -195,11 +212,11 @@ async def _send_card(
 
     ref = await service.resolve(symbol)
     if ref is None:
-        await msg.reply_text(
-            "Couldn't find a USDT pair for "
-            f"<b>{escape(symbol.upper())}</b> on Binance, Bybit, or MEXC.",
-            parse_mode=ParseMode.HTML,
-        )
+        if notify_if_unknown:
+            await msg.reply_text(
+                f"<b>{escape(symbol.upper())}</b> not listed on Binance, Bybit, or MEXC.",
+                parse_mode=ParseMode.HTML,
+            )
         return
 
     try:
