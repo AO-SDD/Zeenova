@@ -43,48 +43,45 @@ def _fmt_change(pct: float | None) -> str:
 def render_price_card(
     md: MarketData,
     *,
-    brand_name: str,
+    channel_name: str,
     channel_url: str,
+    group_name: str,
     group_url: str,
 ) -> str:
     """Build the HTML message body for a price card.
 
-    Mirrors the layout of the example screenshot: a coin-name header line,
-    a dot indicating direction, then a vertical list of price/volume stats,
-    followed by the project's social links.
+    Layout mirrors the reference screenshot: a coloured ticker header,
+    a vertical list of price stats with row-level emoji indicators, and
+    a footer with branded channel + chat links.
     """
     pct = md.price_change_pct_24h
-    dot = "🟢" if (pct is None or pct >= 0) else "🔴"
+    is_up = pct is None or pct >= 0
+    header_dot = "🟢" if is_up else "🔴"
+    change_dot = "🟢" if is_up else "🔴"
+    pair = f"{md.symbol}/USDT"
 
-    pair = f"{md.symbol}USDT"
-    rank_line = ""
-    # Note: rank not exposed on MarketData — kept for layout symmetry with screenshot.
+    price_str = _fmt_price(md.price_usd)
+    change_str = _fmt_change(pct)
+    high_str = _fmt_price(md.high_24h) if md.high_24h is not None else "—"
+    low_str = _fmt_price(md.low_24h) if md.low_24h is not None else "—"
+    cap_str = _fmt_compact(md.market_cap_usd) if md.market_cap_usd is not None else "—"
+    if md.total_volume_usd_24h is not None:
+        vol_str = f"{_fmt_compact(md.total_volume_usd_24h)} USDT"
+    else:
+        vol_str = "—"
 
-    lines: list[str] = [
-        f"{dot} <b>{escape(pair)}</b>",
+    lines = [
+        f"{header_dot} <b>{escape(pair)}</b>",
+        "",
+        f"💵 <b>Price:</b> {escape(price_str)}",
+        f"{change_dot} <b>24H Change:</b> {escape(change_str)}",
+        f"🔼 <b>24H High:</b> {escape(high_str)}",
+        f"🔽 <b>24H Low:</b> {escape(low_str)}",
+        f"🏛 <b>Marketcap:</b> {escape(cap_str)}",
+        f"📊 <b>24H Volume:</b> {escape(vol_str)}",
+        "",
+        f'📣 <a href="{escape(channel_url, quote=True)}">{escape(channel_name)}</a>'
+        f"   |   "
+        f'💬 <a href="{escape(group_url, quote=True)}">{escape(group_name)}</a>',
     ]
-    if rank_line:
-        lines.append(rank_line)
-    lines.extend(
-        [
-            f"<b>Price:</b> {escape(_fmt_price(md.price_usd))}",
-            f"<b>Price Change (24H):</b> {escape(_fmt_change(pct))}",
-            "<b>Low (24H):</b> "
-            + escape(_fmt_price(md.low_24h) if md.low_24h is not None else "—"),
-            "<b>High (24H):</b> "
-            + escape(_fmt_price(md.high_24h) if md.high_24h is not None else "—"),
-            "<b>Marketcap:</b> "
-            + escape(_fmt_compact(md.market_cap_usd) if md.market_cap_usd is not None else "—"),
-            "<b>Volume (24H):</b> "
-            + escape(
-                f"{_fmt_compact(md.total_volume_usd_24h)} USDT"
-                if md.total_volume_usd_24h is not None
-                else "—"
-            ),
-            "",
-            f"📣 <a href=\"{escape(channel_url, quote=True)}\">{escape(brand_name)} Channel</a>"
-            f"   |   "
-            f"💬 <a href=\"{escape(group_url, quote=True)}\">{escape(brand_name)} Group</a>",
-        ]
-    )
     return "\n".join(lines)

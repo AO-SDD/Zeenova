@@ -178,8 +178,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
     caption = render_price_card(
         md,
-        brand_name=settings.brand_name,
+        channel_name=settings.channel_name,
         channel_url=settings.telegram_channel_url,
+        group_name=settings.group_name,
         group_url=settings.telegram_group_url,
     )
     keyboard = _build_keyboard(ref=ref, active=tf)
@@ -266,8 +267,9 @@ async def _send_card(
     )
     caption = render_price_card(
         md,
-        brand_name=settings.brand_name,
+        channel_name=settings.channel_name,
         channel_url=settings.telegram_channel_url,
+        group_name=settings.group_name,
         group_url=settings.telegram_group_url,
     )
     keyboard = _build_keyboard(ref=ref, active=timeframe)

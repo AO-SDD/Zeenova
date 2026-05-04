@@ -22,6 +22,14 @@ def _md(**overrides: object) -> MarketData:
     return MarketData(**base)  # type: ignore[arg-type]
 
 
+_FOOTER_KW: dict[str, str] = dict(
+    channel_name="Zeen Channel",
+    channel_url="https://t.me/ox_zeen",
+    group_name="Zeen Chat",
+    group_url="https://t.me/blockzeen",
+)
+
+
 def test_fmt_price_picks_precision_by_magnitude() -> None:
     assert _fmt_price(12345.6789).startswith("$12,345.")
     assert _fmt_price(1.23) == "$1.2300"
@@ -45,29 +53,31 @@ def test_fmt_change_signs() -> None:
 
 
 def test_render_card_contains_expected_pieces() -> None:
-    text = render_price_card(
-        _md(),
-        brand_name="Zeenova",
-        channel_url="https://t.me/ox_zeen",
-        group_url="https://t.me/blockzeen",
-    )
-    assert "MEGAUSDT" in text
+    text = render_price_card(_md(), **_FOOTER_KW)
+    # Pair styled as SYMBOL/USDT
+    assert "MEGA/USDT" in text
     assert "Price:" in text
     assert "+1.60%" in text
     assert "1.27B" in text
     assert "20.57M USDT" in text
+    # Footer carries the configured names + URLs
+    assert "Zeen Channel" in text
+    assert "Zeen Chat" in text
     assert "https://t.me/ox_zeen" in text
     assert "https://t.me/blockzeen" in text
 
 
 def test_render_card_uses_red_dot_when_negative() -> None:
-    text = render_price_card(
-        _md(price_change_pct_24h=-2.5),
-        brand_name="Zeenova",
-        channel_url="https://t.me/ox_zeen",
-        group_url="https://t.me/blockzeen",
-    )
+    text = render_price_card(_md(price_change_pct_24h=-2.5), **_FOOTER_KW)
     assert text.startswith("🔴")
+    # Inline change line also flips to red.
+    assert "🔴 <b>24H Change:</b> -2.50%" in text
+
+
+def test_render_card_uses_green_dot_when_positive() -> None:
+    text = render_price_card(_md(price_change_pct_24h=4.2), **_FOOTER_KW)
+    assert text.startswith("🟢")
+    assert "🟢 <b>24H Change:</b> +4.20%" in text
 
 
 def test_render_card_handles_missing_fields() -> None:
@@ -79,8 +89,6 @@ def test_render_card_handles_missing_fields() -> None:
             market_cap_usd=None,
             total_volume_usd_24h=None,
         ),
-        brand_name="Zeenova",
-        channel_url="https://t.me/ox_zeen",
-        group_url="https://t.me/blockzeen",
+        **_FOOTER_KW,
     )
     assert text.count("—") >= 5

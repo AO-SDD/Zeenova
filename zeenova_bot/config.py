@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     )
 
     brand_name: str = Field(default="Zeenova")
+    # Names rendered in the price card footer. Independent of ``brand_name``
+    # so the chart watermark can stay "ZEENOVA" while the footer reads
+    # "Zeen Channel" / "Zeen Chat".
+    channel_name: str = Field(default="Zeen Channel")
+    group_name: str = Field(default="Zeen Chat")
     telegram_channel_url: str = Field(default="https://t.me/ox_zeen")
     telegram_group_url: str = Field(default="https://t.me/blockzeen")
 
