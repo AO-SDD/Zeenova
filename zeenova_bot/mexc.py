@@ -28,6 +28,18 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://api.mexc.com"
 
 
+# MEXC's klines endpoint accepts a different interval vocabulary than Binance:
+# in particular it expects ``60m`` for hourly klines and rejects ``1h`` with
+# ``Invalid interval``. Map the internal codes the rest of the bot uses to
+# MEXC's accepted strings.
+_MEXC_INTERVALS: dict[str, str] = {
+    "15m": "15m",
+    "1h": "60m",
+    "4h": "4h",
+    "1d": "1d",
+}
+
+
 class MexcClient:
     def __init__(self, timeout: float = 10.0) -> None:
         self._client = httpx.AsyncClient(base_url=BASE_URL, timeout=timeout)
@@ -107,12 +119,13 @@ class MexcClient:
     async def fetch_klines(
         self, symbol: str, interval: str, limit: int = 80
     ) -> list[list[float]] | None:
-        """MEXC accepts the same interval codes as Binance: 15m, 1h, 4h, 1d."""
+        """Fetch klines from MEXC, translating Binance-style interval codes."""
         pair = f"{symbol.upper()}USDT"
+        mexc_interval = _MEXC_INTERVALS.get(interval, interval)
         try:
             data = await self._get(
                 "/api/v3/klines",
-                params={"symbol": pair, "interval": interval, "limit": limit},
+                params={"symbol": pair, "interval": mexc_interval, "limit": limit},
             )
         except (httpx.HTTPError, ValueError):
             return None

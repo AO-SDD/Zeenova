@@ -34,22 +34,22 @@ _ACCENT = "#5a90c9"
 
 
 def _format_price(value: float) -> str:
-    """Render ``value`` with enough precision for the magnitude.
+    """Render ``value`` with a leading ``$`` and magnitude-aware precision.
 
-    Big tickers like BTC at ~80,500 get a thousands separator and 2 dp
-    so we always show "80,500.00" rather than "80500"; mid-cap tickers
-    keep 4 dp; sub-dollar tokens keep up to 6 dp without losing zeros.
+    Style mirrors the reference design — no thousands separator, just a
+    plain ``$80205.30`` for big tickers and progressively more decimals
+    for sub-dollar tokens.
     """
     if value == 0:
-        return "0.00"
+        return "$0.00"
     abs_v = abs(value)
     if abs_v >= 1000:
-        return f"{value:,.2f}"
+        return f"${value:.2f}"
     if abs_v >= 1:
-        return f"{value:,.4f}"
+        return f"${value:.4f}"
     if abs_v >= 0.01:
-        return f"{value:,.5f}"
-    return f"{value:,.8f}".rstrip("0").rstrip(".")
+        return f"${value:.5f}"
+    return f"${value:.8f}".rstrip("0").rstrip(".")
 
 
 def _build_style() -> dict[str, object]:
@@ -121,10 +121,12 @@ def render_candles(
     ax.yaxis.tick_right()
     ax.yaxis.set_label_position("right")
 
-    # Adaptive price formatter: thousands separator + magnitude-aware
-    # precision so BTC shows "80,500.00" and BILL shows "0.038790".
+    # Adaptive price formatter ($-prefixed, magnitude-aware precision).
+    # Force a dense ladder of ~18 evenly-spaced price ticks so the y-axis
+    # acts as a price ruler rather than just labelling the extremes.
+    ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=18, prune=None))
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _p: _format_price(v)))
-    ax.tick_params(axis="y", pad=2, labelsize=10)
+    ax.tick_params(axis="y", pad=2, labelsize=9)
 
     # mplfinance leaves a wide ~18% margin on every side. Override the
     # axes position(s) to fill the canvas almost edge-to-edge so the
