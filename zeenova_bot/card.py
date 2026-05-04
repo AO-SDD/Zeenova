@@ -70,24 +70,23 @@ def render_price_card(
     else:
         vol_str = "—"
 
-    # Header is the ticker on its own line — rank is folded into the stats
-    # block below so the title stays uncluttered.
+    # Header is the ticker on its own line, then the stats block. Rank
+    # sits at the top of the stats so the most-asked-for value is the
+    # first thing the eye lands on.
     lines: list[str] = [
         f"{header_dot} <b>{escape(pair)}</b>",
         "",
-        f"💵 <b>Price:</b> {escape(price_str)}",
-        f"{change_dot} <b>24H Change:</b> {escape(change_str)}",
-        f"🔼 <b>24H High:</b> {escape(high_str)}",
-        f"🔽 <b>24H Low:</b> {escape(low_str)}",
-        f"🏛 <b>Marketcap:</b> {escape(cap_str)}",
-        f"📊 <b>24H Volume:</b> {escape(vol_str)}",
     ]
     if md.market_cap_rank is not None and md.market_cap_rank > 0:
-        # Sits at the bottom of the stats block, alongside Marketcap and
-        # Volume — mirrors the layout the user asked for.
         lines.append(f"🏆 <b>Rank:</b> No: #{md.market_cap_rank}")
     lines.extend(
         [
+            f"💵 <b>Price:</b> {escape(price_str)}",
+            f"{change_dot} <b>24H Change:</b> {escape(change_str)}",
+            f"🔼 <b>24H High:</b> {escape(high_str)}",
+            f"🔽 <b>24H Low:</b> {escape(low_str)}",
+            f"🏛 <b>Marketcap:</b> {escape(cap_str)}",
+            f"📊 <b>24H Volume:</b> {escape(vol_str)}",
             "",
             f'📣 <a href="{escape(channel_url, quote=True)}"><b>{escape(channel_name)}</b></a>'
             f"   |   "
