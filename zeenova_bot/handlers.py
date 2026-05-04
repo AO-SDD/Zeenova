@@ -43,16 +43,23 @@ _SYMBOL_RE = re.compile(r"^\$?([A-Za-z][A-Za-z0-9]{1,11})$")
 # so concurrent updates serialize safely while still freeing the loop.
 _CHART_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="zeenova-chart")
 
-_HELP_TEXT = (
-    "<b>Zeenova Coin Info Bot</b>\n\n"
-    "Send a coin symbol (e.g. <code>BTC</code>, <code>$ETH</code>, <code>MEGA</code>) "
-    "and I'll reply with a chart and live market data.\n\n"
-    "Commands:\n"
-    "• <code>/p SYMBOL</code> — explicit lookup (works in DM and groups)\n"
-    "• <code>/start</code>, <code>/help</code> — this message\n\n"
-    "Tip for groups: ask the admin to disable my Privacy Mode in @BotFather "
-    "so I can react to plain symbols, or just use <code>/p SYMBOL</code>."
-)
+def _help_text(settings: Settings) -> str:
+    """Build the /start and /help message body from runtime settings."""
+    return (
+        f"<b>📈 {escape(settings.brand_name)}</b>\n"
+        "<i>Real-time crypto prices &amp; candlestick charts.</i>\n\n"
+        "<b>Usage</b>\n"
+        "• Send any coin symbol — e.g. <code>BTC</code>, <code>$ETH</code>, <code>MEGA</code>\n"
+        "• Or use <code>/p SYMBOL</code> for an explicit lookup\n"
+        "• Tap <b>15M</b> · <b>1H</b> · <b>4H</b> · <b>1D</b> to switch timeframe\n\n"
+        "<b>Data sources</b>\n"
+        "Binance · Bybit · MEXC · CoinPaprika\n\n"
+        f'📣 <a href="{escape(settings.telegram_channel_url, quote=True)}">'
+        f"<b>{escape(settings.channel_name)}</b></a>"
+        "   |   "
+        f'💬 <a href="{escape(settings.telegram_group_url, quote=True)}">'
+        f"<b>{escape(settings.group_name)}</b></a>"
+    )
 
 
 def build_application(
@@ -82,9 +89,10 @@ def build_application(
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat is None:
         return
+    settings: Settings = context.application.bot_data["settings"]
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text=_HELP_TEXT,
+        text=_help_text(settings),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
