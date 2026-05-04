@@ -86,6 +86,34 @@ async def test_aggregator_requires_at_least_one_source() -> None:
 
 
 @pytest.mark.asyncio
+async def test_aggregator_returns_rank_from_first_source_that_has_one() -> None:
+    # First source has marketcap but no fetch_rank attribute → skipped.
+    a = AsyncMock(spec=["fetch_marketcap", "aclose"])
+    a.fetch_marketcap = AsyncMock(return_value=1.0)
+    a.aclose = AsyncMock()
+    # Second source exposes fetch_rank.
+    b = AsyncMock(spec=["fetch_marketcap", "fetch_rank", "aclose"])
+    b.fetch_marketcap = AsyncMock(return_value=1.0)
+    b.fetch_rank = AsyncMock(return_value=7)
+    b.aclose = AsyncMock()
+
+    agg = MarketcapAggregator(a, b)
+    assert await agg.fetch_rank("BTC") == 7
+    # Cached on second call.
+    assert await agg.fetch_rank("BTC") == 7
+    b.fetch_rank.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_aggregator_rank_returns_none_when_no_source_has_it() -> None:
+    a = AsyncMock(spec=["fetch_marketcap", "aclose"])
+    a.fetch_marketcap = AsyncMock(return_value=1.0)
+    a.aclose = AsyncMock()
+    agg = MarketcapAggregator(a)
+    assert await agg.fetch_rank("XYZ") is None
+
+
+@pytest.mark.asyncio
 async def test_aggregator_aclose_closes_all() -> None:
     a = AsyncMock()
     a.fetch_marketcap = AsyncMock(return_value=None)

@@ -80,6 +80,22 @@ def test_render_card_uses_green_dot_when_positive() -> None:
     assert "🟢 <b>24H Change:</b> +4.20%" in text
 
 
+def test_render_card_includes_rank_when_present() -> None:
+    text = render_price_card(_md(market_cap_rank=5), **_FOOTER_KW)
+    assert "<b>No: #5</b>" in text
+
+
+def test_render_card_omits_rank_when_missing() -> None:
+    text = render_price_card(_md(market_cap_rank=None), **_FOOTER_KW)
+    assert "No: #" not in text
+
+
+def test_render_card_bolds_channel_and_group() -> None:
+    text = render_price_card(_md(), **_FOOTER_KW)
+    assert "<b>Zeen Channel</b>" in text
+    assert "<b>Zeen Chat</b>" in text
+
+
 def test_render_card_handles_missing_fields() -> None:
     text = render_price_card(
         _md(

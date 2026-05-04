@@ -43,6 +43,7 @@ def _service(
 
     mc = AsyncMock()
     mc.fetch_marketcap = AsyncMock(return_value=marketcap)
+    mc.fetch_rank = AsyncMock(return_value=None)
     mc.aclose = AsyncMock()
 
     return CoinService(binance=bn, bybit=bb, mexc=mx, marketcap=mc)

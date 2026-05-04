@@ -70,18 +70,23 @@ def render_price_card(
     else:
         vol_str = "—"
 
-    lines = [
-        f"{header_dot} <b>{escape(pair)}</b>",
-        "",
-        f"💵 <b>Price:</b> {escape(price_str)}",
-        f"{change_dot} <b>24H Change:</b> {escape(change_str)}",
-        f"🔼 <b>24H High:</b> {escape(high_str)}",
-        f"🔽 <b>24H Low:</b> {escape(low_str)}",
-        f"🏛 <b>Marketcap:</b> {escape(cap_str)}",
-        f"📊 <b>24H Volume:</b> {escape(vol_str)}",
-        "",
-        f'📣 <a href="{escape(channel_url, quote=True)}">{escape(channel_name)}</a>'
-        f"   |   "
-        f'💬 <a href="{escape(group_url, quote=True)}">{escape(group_name)}</a>',
-    ]
+    lines = [f"{header_dot} <b>{escape(pair)}</b>"]
+    if md.market_cap_rank is not None and md.market_cap_rank > 0:
+        # Mirrors the "No: #5" line popular crypto bots show next to the ticker.
+        lines.append(f"<b>No: #{md.market_cap_rank}</b>")
+    lines.extend(
+        [
+            "",
+            f"💵 <b>Price:</b> {escape(price_str)}",
+            f"{change_dot} <b>24H Change:</b> {escape(change_str)}",
+            f"🔼 <b>24H High:</b> {escape(high_str)}",
+            f"🔽 <b>24H Low:</b> {escape(low_str)}",
+            f"🏛 <b>Marketcap:</b> {escape(cap_str)}",
+            f"📊 <b>24H Volume:</b> {escape(vol_str)}",
+            "",
+            f'📣 <a href="{escape(channel_url, quote=True)}"><b>{escape(channel_name)}</b></a>'
+            f"   |   "
+            f'💬 <a href="{escape(group_url, quote=True)}"><b>{escape(group_name)}</b></a>',
+        ]
+    )
     return "\n".join(lines)

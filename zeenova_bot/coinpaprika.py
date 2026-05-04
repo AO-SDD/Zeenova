@@ -52,6 +52,10 @@ class CoinPaprikaClient:
         )
         # symbol (uppercase) -> coinpaprika coin id (e.g. "btc-bitcoin")
         self._id_map: dict[str, str] = {}
+        # symbol (uppercase) -> marketcap rank from /coins (refreshed every
+        # ``coins_ttl_s`` along with the id map). Lets ``fetch_rank`` answer
+        # without an extra round-trip for the most common case (top-N coins).
+        self._rank_map: dict[str, int] = {}
         self._id_map_loaded_at: float = 0.0
         self._id_map_ttl_s = coins_ttl_s
         self._id_map_lock = asyncio.Lock()
@@ -113,8 +117,17 @@ class CoinPaprikaClient:
                 if cur is None or rank < cur[0]:
                     best[sym] = (rank, cid)
             self._id_map = {sym: cid for sym, (_r, cid) in best.items()}
+            self._rank_map = {sym: r for sym, (r, _cid) in best.items()}
             self._id_map_loaded_at = now
             logger.info("CoinPaprika: indexed %d ranked symbols", len(self._id_map))
+
+    async def fetch_rank(self, symbol: str) -> int | None:
+        """Best-effort marketcap rank lookup. Returns ``None`` on any failure."""
+        sym = symbol.strip().upper()
+        if not sym:
+            return None
+        await self._ensure_id_map()
+        return self._rank_map.get(sym)
 
     async def fetch_marketcap(self, symbol: str) -> float | None:
         """Best-effort marketcap lookup. Returns ``None`` on any failure."""

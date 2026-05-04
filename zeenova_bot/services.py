@@ -16,9 +16,11 @@ logger = logging.getLogger(__name__)
 
 
 class MarketcapSource(Protocol):
-    """Anything that can resolve a ticker symbol to a USD marketcap."""
+    """Anything that can resolve a ticker symbol to a USD marketcap + rank."""
 
     async def fetch_marketcap(self, symbol: str) -> float | None: ...
+
+    async def fetch_rank(self, symbol: str) -> int | None: ...
 
     async def aclose(self) -> None: ...
 
@@ -45,6 +47,7 @@ class MarketData:
     low_24h: float | None
     market_cap_usd: float | None
     total_volume_usd_24h: float | None
+    market_cap_rank: int | None = None
 
 
 class CoinNotFoundError(LookupError):
@@ -95,10 +98,11 @@ class CoinService:
         return None
 
     async def market(self, ref: CoinRef) -> MarketData:
-        """Fetch a current ticker snapshot + cached marketcap, in parallel."""
-        ticker, cap = await asyncio.gather(
+        """Fetch ticker + marketcap + rank in parallel for the price card."""
+        ticker, cap, rank = await asyncio.gather(
             self._fetch_ticker(ref),
             self.marketcap.fetch_marketcap(ref.symbol),
+            self.marketcap.fetch_rank(ref.symbol),
             return_exceptions=False,
         )
         if ticker is None:
@@ -113,6 +117,7 @@ class CoinService:
             low_24h=_maybe_float(ticker.get("low")),
             market_cap_usd=cap,
             total_volume_usd_24h=_maybe_float(ticker.get("volume_quote")),
+            market_cap_rank=rank,
         )
 
     async def candles(self, *, ref: CoinRef, timeframe: Timeframe) -> list[list[float]]:

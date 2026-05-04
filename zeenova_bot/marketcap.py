@@ -31,6 +31,13 @@ class _MarketcapSource(Protocol):
     async def aclose(self) -> None: ...
 
 
+@runtime_checkable
+class _RankSource(Protocol):
+    """Optional capability — sources may also expose the marketcap rank."""
+
+    async def fetch_rank(self, symbol: str) -> int | None: ...
+
+
 class MarketcapAggregator:
     """Tries each source in order, caches the final result for ``cache_ttl_s``."""
 
@@ -44,6 +51,9 @@ class MarketcapAggregator:
             raise ValueError("MarketcapAggregator requires at least one source")
         self._sources = list(sources)
         self._cache: TTLCache[str, float] = TTLCache(maxsize=4096, ttl=cache_ttl_s)
+        self._rank_cache: TTLCache[str, int] = TTLCache(
+            maxsize=4096, ttl=cache_ttl_s
+        )
         self._miss_until: dict[str, float] = {}
         self._miss_ttl_s = miss_ttl_s
 
@@ -78,4 +88,27 @@ class MarketcapAggregator:
                 return cap
         # All sources missed — remember briefly to avoid re-fetching every call.
         self._miss_until[sym] = time.time() + self._miss_ttl_s
+        return None
+
+    async def fetch_rank(self, symbol: str) -> int | None:
+        """Best-effort marketcap rank. Sources that don't expose ranks are skipped."""
+        sym = symbol.strip().upper()
+        if not sym:
+            return None
+        cached = self._rank_cache.get(sym)
+        if cached is not None:
+            return cached
+        for src in self._sources:
+            if not isinstance(src, _RankSource):
+                continue
+            try:
+                rank = await src.fetch_rank(sym)
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "rank source %s raised", type(src).__name__, exc_info=True
+                )
+                continue
+            if rank is not None and rank > 0:
+                self._rank_cache[sym] = rank
+                return rank
         return None
