@@ -90,10 +90,10 @@ def render_candles(
     """Render a candlestick PNG and return its raw bytes.
 
     ``candles`` is a list of ``[ts_ms, open, high, low, close]`` rows in
-    chronological order. At least 2 rows are required.
+    chronological order. At least 1 row is required.
     """
-    if len(candles) < 2:
-        raise ValueError("need at least 2 candles to render a chart")
+    if not candles:
+        raise ValueError("need at least 1 candle to render a chart")
 
     df = pd.DataFrame(
         candles,

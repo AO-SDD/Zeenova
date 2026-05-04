@@ -116,7 +116,13 @@ class CoinService:
         )
 
     async def candles(self, *, ref: CoinRef, timeframe: Timeframe) -> list[list[float]]:
-        """Fetch klines from the exchange that ``ref`` was resolved against."""
+        """Fetch klines from the exchange that ``ref`` was resolved against.
+
+        Newly-listed coins legitimately have very short history (e.g. a
+        single ``1d`` candle on day one), so we only treat a completely
+        empty response as "not found" — anything with at least one row
+        renders fine.
+        """
         rows: list[list[float]] | None
         if ref.source == "binance":
             rows = await self.binance.fetch_klines(ref.symbol, timeframe.binance_interval)
@@ -126,7 +132,7 @@ class CoinService:
             rows = await self.mexc.fetch_klines(ref.symbol, timeframe.binance_interval)
         else:  # pragma: no cover - guarded by resolve()
             rows = None
-        if not rows or len(rows) < 2:
+        if not rows:
             raise CoinNotFoundError(f"no candles for {ref.pair} on {ref.source}")
         return rows
 

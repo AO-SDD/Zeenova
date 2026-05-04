@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 
@@ -44,10 +45,28 @@ def main() -> None:
 
     app = build_application(settings, service)
 
+    async def _post_init(_: Application) -> None:  # type: ignore[type-arg]
+        # Warm Binance + MEXC pair caches so the first user click doesn't
+        # pay the ~1-2 s ``exchangeInfo`` round-trip. Bybit is allowed to
+        # fail (it's geo-blocked from this region) — its client logs the
+        # 403 once and stops retrying.
+        async def _warm(name: str, coro: object) -> None:
+            try:
+                await coro  # type: ignore[misc]
+            except Exception as exc:  # noqa: BLE001
+                log.warning("warm-up: %s failed: %s", name, exc)
+
+        await asyncio.gather(
+            _warm("binance", binance.has_pair("BTC")),
+            _warm("mexc", mexc.has_pair("BTC")),
+            _warm("bybit", bybit.has_pair("BTC")),
+        )
+
     async def _post_shutdown(_: Application) -> None:  # type: ignore[type-arg]
         await service.aclose()
 
-    # PTB v21 exposes ``post_shutdown`` as a configurable hook on Application
+    # PTB v21 exposes ``post_init`` / ``post_shutdown`` as configurable hooks.
+    app.post_init = _post_init
     app.post_shutdown = _post_shutdown
 
     log.info(
