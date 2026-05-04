@@ -3,21 +3,20 @@
 from __future__ import annotations
 
 from zeenova_bot.card import _fmt_change, _fmt_compact, _fmt_price, render_price_card
-from zeenova_bot.coingecko import MarketData
+from zeenova_bot.services import MarketData
 
 
 def _md(**overrides: object) -> MarketData:
     base: dict[str, object] = dict(
-        id="megaeth",
         symbol="MEGA",
-        name="MegaETH",
+        pair="MEGAUSDT",
+        source="binance",
         price_usd=0.1261,
         price_change_pct_24h=1.6,
         high_24h=0.1352,
         low_24h=0.1182,
         market_cap_usd=1_270_000_000,
         total_volume_usd_24h=20_570_000,
-        image_url=None,
     )
     base.update(overrides)
     return MarketData(**base)  # type: ignore[arg-type]

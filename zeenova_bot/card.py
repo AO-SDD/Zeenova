@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from html import escape
 
-from .coingecko import MarketData
+from .services import MarketData
 
 
 def _fmt_price(value: float) -> str:

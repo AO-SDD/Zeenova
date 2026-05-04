@@ -24,9 +24,8 @@ from telegram.ext import (
 
 from .card import render_price_card
 from .chart import render_candles
-from .coingecko import CoinGeckoError, CoinSummary
 from .config import Settings
-from .services import CoinService
+from .services import CoinNotFound, CoinRef, CoinService
 from .timeframes import DEFAULT_TIMEFRAME, TIMEFRAMES, Timeframe, get_timeframe
 
 logger = logging.getLogger(__name__)
@@ -127,17 +126,19 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if len(parts) != 4 or parts[0] != "tf":
         return
     tf = get_timeframe(parts[1])
-    coin_id = parts[2]
-    symbol = parts[3]
+    source = parts[2]
+    symbol = parts[3].upper()
+    if source not in {"binance", "bybit"}:
+        return
+    ref = CoinRef(symbol=symbol, pair=f"{symbol}USDT", source=source)
 
     service: CoinService = context.bot_data["service"]
     settings: Settings = context.bot_data["settings"]
-    summary = CoinSummary(id=coin_id, symbol=symbol.lower(), name="", market_cap_rank=None)
 
     try:
-        md = await service.market(coin_id)
-        candles = await service.candles(summary=summary, timeframe=tf)
-    except CoinGeckoError as exc:
+        md = await service.market(ref)
+        candles = await service.candles(ref=ref, timeframe=tf)
+    except CoinNotFound as exc:
         logger.warning("callback: data error for %s/%s: %s", symbol, tf.code, exc)
         await query.answer(f"Could not refresh {symbol}: {exc}", show_alert=False)
         return
@@ -154,7 +155,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         channel_url=settings.telegram_channel_url,
         group_url=settings.telegram_group_url,
     )
-    keyboard = _build_keyboard(coin_id=coin_id, symbol=symbol, active=tf)
+    keyboard = _build_keyboard(ref=ref, active=tf)
     try:
         await query.edit_message_media(
             media=InputMediaPhoto(
@@ -182,30 +183,27 @@ async def _send_card(
     service: CoinService = context.bot_data["service"]
     settings: Settings = context.bot_data["settings"]
 
-    try:
-        summary = await service.resolve(symbol)
-    except CoinGeckoError as exc:
-        await msg.reply_text(f"Could not look up <code>{escape(symbol)}</code>: {exc}",
-                             parse_mode=ParseMode.HTML)
-        return
-    if summary is None:
+    ref = await service.resolve(symbol)
+    if ref is None:
         await msg.reply_text(
-            f"Couldn't find a coin with symbol <b>{escape(symbol.upper())}</b>.",
+            f"Couldn't find a USDT pair for <b>{escape(symbol.upper())}</b> on Binance or Bybit.",
             parse_mode=ParseMode.HTML,
         )
         return
 
     try:
-        md = await service.market(summary.id)
-        candles = await service.candles(summary=summary, timeframe=timeframe)
-    except CoinGeckoError as exc:
-        await msg.reply_text(f"Data error: {escape(str(exc))}",
-                             parse_mode=ParseMode.HTML)
+        md = await service.market(ref)
+        candles = await service.candles(ref=ref, timeframe=timeframe)
+    except CoinNotFound as exc:
+        await msg.reply_text(
+            f"Data error: {escape(str(exc))}",
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     png = render_candles(
         candles=candles,
-        symbol=summary.symbol,
+        symbol=ref.symbol,
         timeframe=timeframe,
         brand_name=settings.brand_name,
     )
@@ -215,7 +213,7 @@ async def _send_card(
         channel_url=settings.telegram_channel_url,
         group_url=settings.telegram_group_url,
     )
-    keyboard = _build_keyboard(coin_id=summary.id, symbol=summary.symbol, active=timeframe)
+    keyboard = _build_keyboard(ref=ref, active=timeframe)
     await context.bot.send_photo(
         chat_id=chat.id,
         photo=png,
@@ -226,18 +224,16 @@ async def _send_card(
     )
 
 
-def _build_keyboard(
-    *, coin_id: str, symbol: str, active: Timeframe
-) -> InlineKeyboardMarkup:
-    settings_row: list[InlineKeyboardButton] = []
+def _build_keyboard(*, ref: CoinRef, active: Timeframe) -> InlineKeyboardMarkup:
+    row: list[InlineKeyboardButton] = []
     for tf in TIMEFRAMES:
         label = f"✅ {tf.label}" if tf.code == active.code else tf.label
-        settings_row.append(
+        row.append(
             InlineKeyboardButton(
-                label, callback_data=f"tf:{tf.code}:{coin_id}:{symbol.lower()}"
+                label, callback_data=f"tf:{tf.code}:{ref.source}:{ref.symbol}"
             )
         )
-    return InlineKeyboardMarkup([settings_row])
+    return InlineKeyboardMarkup([row])
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
