@@ -2,15 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
+from typing import Protocol
 
 from .binance import BinanceClient
 from .bybit import BybitClient
-from .coingecko import MarketcapClient
 from .timeframes import Timeframe
 
 logger = logging.getLogger(__name__)
+
+
+class MarketcapSource(Protocol):
+    """Anything that can resolve a ticker symbol to a USD marketcap."""
+
+    async def fetch_marketcap(self, symbol: str) -> float | None: ...
+
+    async def aclose(self) -> None: ...
 
 
 @dataclass(slots=True)
@@ -52,7 +61,7 @@ class CoinService:
         self,
         binance: BinanceClient,
         bybit: BybitClient,
-        marketcap: MarketcapClient,
+        marketcap: MarketcapSource,
     ) -> None:
         self.binance = binance
         self.bybit = bybit
@@ -75,11 +84,14 @@ class CoinService:
         return None
 
     async def market(self, ref: CoinRef) -> MarketData:
-        """Fetch a current ticker snapshot + cached marketcap."""
-        ticker = await self._fetch_ticker(ref)
+        """Fetch a current ticker snapshot + cached marketcap, in parallel."""
+        ticker, cap = await asyncio.gather(
+            self._fetch_ticker(ref),
+            self.marketcap.fetch_marketcap(ref.symbol),
+            return_exceptions=False,
+        )
         if ticker is None:
             raise CoinNotFoundError(f"ticker unavailable for {ref.pair} on {ref.source}")
-        cap = await self.marketcap.fetch_marketcap(ref.symbol)
         return MarketData(
             symbol=ref.symbol,
             pair=ref.pair,

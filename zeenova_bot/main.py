@@ -9,9 +9,11 @@ from telegram.ext import Application
 
 from .binance import BinanceClient
 from .bybit import BybitClient
-from .coingecko import MarketcapClient
+from .coingecko import MarketcapClient as CoinGeckoMarketcap
+from .coinpaprika import CoinPaprikaClient
 from .config import load_settings
 from .handlers import build_application
+from .marketcap import MarketcapAggregator
 from .services import CoinService
 
 
@@ -31,7 +33,9 @@ def main() -> None:
 
     binance = BinanceClient()
     bybit = BybitClient()
-    marketcap = MarketcapClient(api_key=settings.coingecko_api_key)
+    paprika = CoinPaprikaClient()
+    coingecko = CoinGeckoMarketcap(api_key=settings.coingecko_api_key)
+    marketcap = MarketcapAggregator(paprika, coingecko)
     service = CoinService(binance=binance, bybit=bybit, marketcap=marketcap)
 
     app = build_application(settings, service)
@@ -42,7 +46,10 @@ def main() -> None:
     # PTB v21 exposes ``post_shutdown`` as a configurable hook on Application
     app.post_shutdown = _post_shutdown
 
-    log.info("Zeenova bot starting up (sources: Binance + Bybit, marketcap: CoinGecko cached)")
+    log.info(
+        "Zeenova bot starting up "
+        "(sources: Binance + Bybit, marketcap: CoinPaprika -> CoinGecko cached)"
+    )
     app.run_polling(allowed_updates=["message", "callback_query"])
 
 

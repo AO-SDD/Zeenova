@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from html import escape
 
 from telegram import (
@@ -33,6 +36,11 @@ logger = logging.getLogger(__name__)
 # Free-text symbols are short alphanumeric tokens. Anything with spaces or
 # punctuation is ignored to keep group chatter from triggering the bot.
 _SYMBOL_RE = re.compile(r"^\$?([A-Za-z][A-Za-z0-9]{1,11})$")
+
+# matplotlib + mplfinance touch pyplot's global figure manager, which is not
+# thread-safe. We render charts off the event loop on a single worker thread
+# so concurrent updates serialize safely while still freeing the loop.
+_CHART_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="zeenova-chart")
 
 _HELP_TEXT = (
     "<b>Zeenova Coin Info Bot</b>\n\n"
@@ -136,14 +144,16 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     settings: Settings = context.bot_data["settings"]
 
     try:
-        md = await service.market(ref)
-        candles = await service.candles(ref=ref, timeframe=tf)
+        md, candles = await asyncio.gather(
+            service.market(ref),
+            service.candles(ref=ref, timeframe=tf),
+        )
     except CoinNotFound as exc:
         logger.warning("callback: data error for %s/%s: %s", symbol, tf.code, exc)
         await query.answer(f"Could not refresh {symbol}: {exc}", show_alert=False)
         return
 
-    png = render_candles(
+    png = await _render_candles_async(
         candles=candles,
         symbol=symbol,
         timeframe=tf,
@@ -192,8 +202,10 @@ async def _send_card(
         return
 
     try:
-        md = await service.market(ref)
-        candles = await service.candles(ref=ref, timeframe=timeframe)
+        md, candles = await asyncio.gather(
+            service.market(ref),
+            service.candles(ref=ref, timeframe=timeframe),
+        )
     except CoinNotFound as exc:
         await msg.reply_text(
             f"Data error: {escape(str(exc))}",
@@ -201,7 +213,7 @@ async def _send_card(
         )
         return
 
-    png = render_candles(
+    png = await _render_candles_async(
         candles=candles,
         symbol=ref.symbol,
         timeframe=timeframe,
@@ -234,6 +246,27 @@ def _build_keyboard(*, ref: CoinRef, active: Timeframe) -> InlineKeyboardMarkup:
             )
         )
     return InlineKeyboardMarkup([row])
+
+
+async def _render_candles_async(
+    *,
+    candles: list[list[float]],
+    symbol: str,
+    timeframe: Timeframe,
+    brand_name: str,
+) -> bytes:
+    """Run the synchronous matplotlib renderer in a thread to keep
+    the event loop responsive under bursts of concurrent updates.
+    """
+    loop = asyncio.get_running_loop()
+    func = partial(
+        render_candles,
+        candles=candles,
+        symbol=symbol,
+        timeframe=timeframe,
+        brand_name=brand_name,
+    )
+    return await loop.run_in_executor(_CHART_EXECUTOR, func)
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
