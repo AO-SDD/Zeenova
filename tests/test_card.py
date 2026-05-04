@@ -82,12 +82,18 @@ def test_render_card_uses_green_dot_when_positive() -> None:
 
 def test_render_card_includes_rank_when_present() -> None:
     text = render_price_card(_md(market_cap_rank=5), **_FOOTER_KW)
-    assert "<b>No: #5</b>" in text
+    # Rank now lives in the stats block (below Volume), not next to the title.
+    assert "🏆 <b>Rank:</b> No: #5" in text
+    # The title line should still be just the ticker, no rank attached.
+    first_line = text.split("\n", 1)[0]
+    assert "MEGA/USDT" in first_line
+    assert "No:" not in first_line
 
 
 def test_render_card_omits_rank_when_missing() -> None:
     text = render_price_card(_md(market_cap_rank=None), **_FOOTER_KW)
     assert "No: #" not in text
+    assert "Rank:" not in text
 
 
 def test_render_card_bolds_channel_and_group() -> None:
