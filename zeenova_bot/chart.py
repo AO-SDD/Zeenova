@@ -133,6 +133,10 @@ def render_candles(
     plot_box = (0.012, 0.085, 0.895, 0.905)
     for a in axes:
         a.set_position(plot_box)
+        # Drop the box around the candles — frame-less look matches the
+        # reference design.
+        for spine in a.spines.values():
+            spine.set_visible(False)
 
     # Header line: "SYMBOL | TIMEFRAME | brand"
     header = f"{symbol.upper()} | {timeframe.label} | {brand_name}"
@@ -148,15 +152,15 @@ def render_candles(
         ha="left",
     )
 
-    # Big translucent Zeenova watermark across the middle
+    # Translucent Zeenova watermark centred over the candles
     ax.text(
         0.5,
         0.5,
         brand_name.upper(),
         transform=ax.transAxes,
         color=_TEXT,
-        alpha=0.085,
-        fontsize=110,
+        alpha=0.09,
+        fontsize=72,
         fontweight="bold",
         ha="center",
         va="center",

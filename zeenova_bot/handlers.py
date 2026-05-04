@@ -16,6 +16,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ChatType, ParseMode
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -189,9 +190,35 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             ),
             reply_markup=keyboard,
         )
-    except Exception:  # noqa: BLE001
-        # Telegram refuses edits when content is identical; ignore.
-        logger.debug("edit_message_media failed", exc_info=True)
+    except BadRequest as exc:
+        # Telegram returns 400 "message is not modified" when the new
+        # photo is byte-identical to the one already in the message —
+        # safe to ignore. Anything else (markup decode errors, expired
+        # photo, deleted message, permission issue) is logged.
+        msg_text = str(exc).lower()
+        if "message is not modified" in msg_text:
+            logger.debug("callback: edit ignored (identical content)")
+        else:
+            logger.warning(
+                "callback: edit_message_media failed for %s/%s: %s",
+                symbol,
+                tf.code,
+                exc,
+            )
+            await query.answer(
+                f"Couldn't update {symbol}; try sending the symbol again.",
+                show_alert=False,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "callback: unexpected error editing message for %s/%s: %s",
+            symbol,
+            tf.code,
+            exc,
+        )
+        await query.answer(
+            "Sorry, something went wrong. Try again.", show_alert=False
+        )
 
 
 async def _send_card(
