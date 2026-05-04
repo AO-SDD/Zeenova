@@ -13,6 +13,7 @@ from .bybit import BybitClient
 from .coingecko import MarketcapClient as CoinGeckoMarketcap
 from .coinpaprika import CoinPaprikaClient
 from .config import load_settings
+from .fx import FxClient
 from .handlers import build_application
 from .marketcap import MarketcapAggregator
 from .mexc import MexcClient
@@ -42,8 +43,9 @@ def main() -> None:
     service = CoinService(
         binance=binance, bybit=bybit, mexc=mexc, marketcap=marketcap
     )
+    fx = FxClient()
 
-    app = build_application(settings, service)
+    app = build_application(settings, service, fx)
 
     async def _post_init(_: Application) -> None:  # type: ignore[type-arg]
         # Warm Binance + MEXC pair caches so the first user click doesn't
@@ -64,6 +66,7 @@ def main() -> None:
 
     async def _post_shutdown(_: Application) -> None:  # type: ignore[type-arg]
         await service.aclose()
+        await fx.aclose()
 
     # PTB v21 exposes ``post_init`` / ``post_shutdown`` as configurable hooks.
     app.post_init = _post_init
@@ -71,7 +74,8 @@ def main() -> None:
 
     log.info(
         "Zeenova bot starting up "
-        "(sources: Binance + Bybit + MEXC, marketcap: CoinPaprika -> CoinGecko cached)"
+        "(sources: Binance + Bybit + MEXC, marketcap: CoinPaprika -> CoinGecko cached, "
+        "fx: fawazahmed0/currency-api)"
     )
     app.run_polling(allowed_updates=["message", "callback_query"])
 

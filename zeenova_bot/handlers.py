@@ -26,9 +26,12 @@ from telegram.ext import (
     filters,
 )
 
+from .calc import CalcError, safe_eval
+from .calc import parse_input as parse_calc_input
 from .card import render_price_card
 from .chart import render_candles
 from .config import Settings
+from .fx import FxClient
 from .services import CoinNotFound, CoinRef, CoinService
 from .timeframes import DEFAULT_TIMEFRAME, TIMEFRAMES, Timeframe, get_timeframe
 
@@ -37,6 +40,11 @@ logger = logging.getLogger(__name__)
 # Free-text symbols are short alphanumeric tokens. Anything with spaces or
 # punctuation is ignored to keep group chatter from triggering the bot.
 _SYMBOL_RE = re.compile(r"^\$?([A-Za-z][A-Za-z0-9]{1,11})$")
+
+# Operators that signal a clear calculator intent. If a free-text message
+# contains at least one of these, we always reply with either a result or
+# a parse error — silently dropping it would leave the user wondering.
+_CALC_OPS = set("+-*/%^")
 
 # matplotlib + mplfinance touch pyplot's global figure manager, which is not
 # thread-safe. We render charts off the event loop on a single worker thread
@@ -47,13 +55,19 @@ def _help_text(settings: Settings) -> str:
     """Build the /start and /help message body from runtime settings."""
     return (
         f"<b>📈 {escape(settings.brand_name)}</b>\n"
-        "<i>Real-time crypto prices &amp; candlestick charts.</i>\n\n"
-        "<b>Usage</b>\n"
+        "<i>Real-time crypto prices, candlestick charts, "
+        "and a built-in calculator with currency conversion.</i>\n\n"
+        "<b>Prices &amp; charts</b>\n"
         "• Send any coin symbol — e.g. <code>BTC</code>, <code>$ETH</code>, <code>MEGA</code>\n"
         "• Or use <code>/p SYMBOL</code> for an explicit lookup\n"
         "• Tap <b>15M</b> · <b>1H</b> · <b>4H</b> · <b>1D</b> to switch timeframe\n\n"
+        "<b>Calculator &amp; conversion</b>\n"
+        "• Math — <code>2+2/4</code>, <code>(1+2)*3</code>\n"
+        "• To a target currency — <code>2+2/4 btc</code> (USD → BTC)\n"
+        "• Between any two currencies — <code>1 usd egp</code>, "
+        "<code>5000 egp btc</code>, <code>1 eth btc</code>\n\n"
         "<b>Data sources</b>\n"
-        "Binance · Bybit · MEXC · CoinPaprika\n\n"
+        "Binance · Bybit · MEXC · CoinPaprika · fawazahmed0/currency-api\n\n"
         f'📣 <a href="{escape(settings.telegram_channel_url, quote=True)}">'
         f"<b>{escape(settings.channel_name)}</b></a>"
         "   |   "
@@ -63,7 +77,7 @@ def _help_text(settings: Settings) -> str:
 
 
 def build_application(
-    settings: Settings, service: CoinService
+    settings: Settings, service: CoinService, fx: FxClient
 ) -> Application:  # type: ignore[type-arg]
     app = (
         Application.builder()
@@ -73,6 +87,7 @@ def build_application(
     )
     app.bot_data["settings"] = settings
     app.bot_data["service"] = service
+    app.bot_data["fx"] = fx
 
     app.add_handler(CommandHandler(["start", "help"], cmd_help))
     app.add_handler(CommandHandler(["p", "price"], cmd_price))
@@ -132,6 +147,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     text = msg.text.strip()
+
+    # Calc / FX first: anything with a digit may be ``2+2``, ``1 usd egp``,
+    # ``2+2/4 btc``, etc. ``handle_calc`` returns True if it claimed the
+    # message; otherwise we fall through to the bare-symbol handler.
+    if await _handle_calc(update, context, text):
+        return
+
     match = _SYMBOL_RE.match(text)
     if not match:
         return
@@ -147,6 +169,99 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         timeframe=DEFAULT_TIMEFRAME,
         notify_if_unknown=False,
     )
+
+
+def _fmt_amount(value: float) -> str:
+    """Pretty-print a numeric amount with sensible precision per magnitude.
+
+    Avoids the common pitfalls — fixed-precision strings either truncating
+    interesting decimals on small values or producing a wall of trailing
+    zeros on round numbers.
+    """
+    abs_v = abs(value)
+    if abs_v == 0:
+        return "0"
+    if abs_v >= 1000:
+        return f"{value:,.2f}"
+    if abs_v >= 1:
+        text = f"{value:,.4f}"
+    elif abs_v >= 0.0001:
+        text = f"{value:.6f}"
+    else:
+        text = f"{value:.8f}"
+    # Strip trailing zeros (e.g. ``2.5000`` → ``2.5``) but keep at least
+    # one digit after the decimal point.
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
+
+
+async def _handle_calc(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
+) -> bool:
+    """Try to interpret ``text`` as math/conversion. Returns True if handled."""
+    msg = update.effective_message
+    if msg is None:
+        return False
+
+    parsed = parse_calc_input(text)
+    if parsed is None:
+        return False
+    expr, ccy1, ccy2 = parsed
+
+    has_op = any(c in expr for c in _CALC_OPS)
+    has_ccy = ccy1 is not None
+    if not has_op and not has_ccy:
+        # Bare number with no operator and no currency — nothing useful to
+        # echo back; let it drop silently.
+        return False
+
+    try:
+        value = safe_eval(expr)
+    except CalcError as exc:
+        await msg.reply_text(f"⚠️ Math error: {exc}")
+        return True
+
+    expr_pretty = " ".join(expr.split())
+    if not has_ccy:
+        # Pure math.
+        body = f"🧮 <code>{escape(expr_pretty)}</code>\n= <code>{_fmt_amount(value)}</code>"
+        await msg.reply_text(body, parse_mode=ParseMode.HTML)
+        return True
+
+    fx: FxClient = context.bot_data["fx"]
+    # 1 currency given → ``USD → ccy1``. 2 given → ``ccy1 → ccy2``.
+    if ccy2 is None:
+        from_ccy, to_ccy = "usd", ccy1.lower()  # type: ignore[union-attr]
+    else:
+        from_ccy, to_ccy = ccy1.lower(), ccy2.lower()  # type: ignore[union-attr]
+
+    try:
+        converted = await fx.convert(value, from_ccy, to_ccy)
+    except Exception:  # noqa: BLE001
+        logger.exception("fx: convert raised for %s -> %s", from_ccy, to_ccy)
+        await msg.reply_text(
+            "⚠️ Couldn't reach the currency rates service. Try again in a moment."
+        )
+        return True
+
+    if converted is None:
+        await msg.reply_text(
+            f"⚠️ Unsupported currency pair: <b>{escape(from_ccy.upper())}</b> → "
+            f"<b>{escape(to_ccy.upper())}</b>",
+            parse_mode=ParseMode.HTML,
+        )
+        return True
+
+    from_str = f"{_fmt_amount(value)} {from_ccy.upper()}"
+    to_str = f"{_fmt_amount(converted)} {to_ccy.upper()}"
+    if has_op:
+        header = f"🧮 <code>{escape(expr_pretty)}</code> = {escape(from_str)}"
+    else:
+        header = f"💱 {escape(from_str)}"
+    body = f"{header}\n≈ <code>{escape(to_str)}</code>"
+    await msg.reply_text(body, parse_mode=ParseMode.HTML)
+    return True
 
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
