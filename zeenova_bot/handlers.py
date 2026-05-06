@@ -36,6 +36,7 @@ from .card import render_price_card
 from .chart import render_candles
 from .coinpaprika import CoinPaprikaClient, GlobalSnapshot, TickerSnapshot
 from .config import Settings
+from .fear_greed import IMAGE_URL as FEAR_GREED_IMAGE_URL
 from .fear_greed import FearGreed, FearGreedClient
 from .fx import FxClient
 from .services import (
@@ -382,10 +383,27 @@ async def cmd_market(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             parse_mode=ParseMode.HTML,
         )
         return
+    body = _render_market(
+        snap, brand_name=settings.brand_name, fear_greed=fng
+    )
+    if fng is not None:
+        # alternative.me publishes a fresh dial PNG every day at the same
+        # URL; hand it straight to Telegram so we don't have to fetch /
+        # upload bytes ourselves. The body fits well under the 1024-char
+        # photo-caption limit. Fall back to a plain text reply if Telegram
+        # rejects the photo (e.g. transient CDN hiccup) so /market never
+        # silently disappears.
+        try:
+            await msg.reply_photo(
+                photo=FEAR_GREED_IMAGE_URL,
+                caption=body,
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        except Exception:  # noqa: BLE001
+            logger.exception("/market: reply_photo failed; falling back to text")
     await msg.reply_text(
-        _render_market(
-            snap, brand_name=settings.brand_name, fear_greed=fng
-        ),
+        body,
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )

@@ -698,6 +698,7 @@ def _cmd_update_context(
 ) -> tuple[MagicMock, MagicMock]:
     msg = MagicMock()
     msg.reply_text = AsyncMock()
+    msg.reply_photo = AsyncMock()
     update = MagicMock()
     update.effective_message = msg
     update.effective_chat = MagicMock()
@@ -868,7 +869,10 @@ def test_parse_ticker_skips_invalid_rows() -> None:
 
 @pytest.mark.asyncio
 async def test_cmd_market_includes_fear_greed_when_available() -> None:
-    """``/market`` adds the Fear & Greed line when the client returns data."""
+    """``/market`` sends the Fear & Greed dial as a photo with the body in
+    the caption when the index reading is available.
+    """
+    from zeenova_bot.fear_greed import IMAGE_URL as FNG_IMAGE_URL
     from zeenova_bot.fear_greed import FearGreed
     from zeenova_bot.handlers import cmd_market
 
@@ -880,10 +884,40 @@ async def test_cmd_market_includes_fear_greed_when_available() -> None:
     )
     update, context = _cmd_update_context(paprika=paprika, fear_greed=fng)
     await cmd_market(update, context)
+
+    msg = update.effective_message
+    msg.reply_photo.assert_called_once()
+    msg.reply_text.assert_not_called()  # Photo path, not text.
+    _args, kwargs = msg.reply_photo.call_args
+    assert kwargs["photo"] == FNG_IMAGE_URL
+    caption = kwargs["caption"]
+    assert "Fear &amp; Greed" in caption  # HTML-escaped &
+    assert "72/100" in caption
+    assert "Greed" in caption
+
+
+@pytest.mark.asyncio
+async def test_cmd_market_falls_back_to_text_when_photo_fails() -> None:
+    """If Telegram rejects the dial photo, /market still posts the body
+    as plain text rather than silently disappearing.
+    """
+    from zeenova_bot.fear_greed import FearGreed
+    from zeenova_bot.handlers import cmd_market
+
+    paprika = MagicMock()
+    paprika.fetch_global = AsyncMock(return_value=_global_snapshot())
+    fng = MagicMock()
+    fng.fetch_current = AsyncMock(
+        return_value=FearGreed(value=72, classification="Greed")
+    )
+    update, context = _cmd_update_context(paprika=paprika, fear_greed=fng)
+    update.effective_message.reply_photo = AsyncMock(
+        side_effect=RuntimeError("CDN hiccup")
+    )
+    await cmd_market(update, context)
     body = _last_reply(update.effective_message)
-    assert "Fear &amp; Greed" in body  # HTML-escaped &
+    assert "Fear &amp; Greed" in body
     assert "72/100" in body
-    assert "Greed" in body
 
 
 @pytest.mark.asyncio
