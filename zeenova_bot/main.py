@@ -84,7 +84,9 @@ def main() -> None:
         "(sources: Binance + Bybit + MEXC, marketcap: CoinPaprika -> CoinGecko cached, "
         "fx: fawazahmed0/currency-api)"
     )
-    app.run_polling(allowed_updates=["message", "callback_query"])
+    app.run_polling(
+        allowed_updates=["message", "callback_query", "inline_query"]
+    )
 
 
 if __name__ == "__main__":
