@@ -40,8 +40,15 @@ def main() -> None:
     paprika = CoinPaprikaClient()
     coingecko = CoinGeckoMarketcap(api_key=settings.coingecko_api_key)
     marketcap = MarketcapAggregator(paprika, coingecko)
+    # CoinPaprika doubles as the off-exchange price source — when a coin
+    # isn't on Binance/Bybit/MEXC, we still get a USD price + marketcap
+    # from the same /tickers call we already use for marketcap data.
     service = CoinService(
-        binance=binance, bybit=bybit, mexc=mexc, marketcap=marketcap
+        binance=binance,
+        bybit=bybit,
+        mexc=mexc,
+        marketcap=marketcap,
+        off_exchange=paprika,
     )
     fx = FxClient()
 

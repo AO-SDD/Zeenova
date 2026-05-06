@@ -33,7 +33,7 @@ from .card import render_price_card
 from .chart import render_candles
 from .config import Settings
 from .fx import FxClient
-from .services import CoinNotFound, CoinRef, CoinService
+from .services import OFF_EXCHANGE_SOURCE, CoinNotFound, CoinRef, CoinService
 from .timeframes import DEFAULT_TIMEFRAME, TIMEFRAMES, Timeframe, get_timeframe
 
 __all__ = [
@@ -440,9 +440,34 @@ async def _send_card(
     if ref is None:
         if notify_if_unknown:
             await msg.reply_text(
-                f"<b>{escape(symbol.upper())}</b> not listed on Binance, Bybit, or MEXC.",
+                f"<b>{escape(symbol.upper())}</b> not found on any of our data sources.",
                 parse_mode=ParseMode.HTML,
             )
+        return
+
+    # Off-exchange coins (resolved via CoinPaprika) have no OHLC history
+    # we can render — send a text-only price card instead of a chart.
+    if ref.source == OFF_EXCHANGE_SOURCE:
+        try:
+            md = await service.market(ref)
+        except CoinNotFound as exc:
+            await msg.reply_text(
+                f"Data error: {escape(str(exc))}",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        caption = render_price_card(
+            md,
+            channel_name=settings.channel_name,
+            channel_url=settings.telegram_channel_url,
+            group_name=settings.group_name,
+            group_url=settings.telegram_group_url,
+        )
+        await msg.reply_text(
+            caption,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
         return
 
     try:

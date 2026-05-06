@@ -58,7 +58,11 @@ def render_price_card(
     is_up = pct is None or pct >= 0
     header_dot = "🟢" if is_up else "🔴"
     change_dot = "🟢" if is_up else "🔴"
-    pair = f"{md.symbol}/USDT"
+    # Off-exchange pairs already arrive with a slash (e.g. "OCT/USD") so
+    # we just trust whatever ``md.pair`` says when the slash is present.
+    # Exchange pairs are concatenated (e.g. "BTCUSDT") and need a friendlier
+    # display form.
+    pair = md.pair if "/" in md.pair else f"{md.symbol}/USDT"
 
     price_str = _fmt_price(md.price_usd)
     change_str = _fmt_change(pct)

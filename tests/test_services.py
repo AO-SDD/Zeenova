@@ -6,7 +6,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from zeenova_bot.services import CoinNotFound, CoinRef, CoinService
+from zeenova_bot.services import (
+    OFF_EXCHANGE_SOURCE,
+    CoinNotFound,
+    CoinRef,
+    CoinService,
+    PriceSnapshot,
+)
 from zeenova_bot.timeframes import get_timeframe
 
 
@@ -22,6 +28,7 @@ def _service(
     bybit_klines: list[list[float]] | None = None,
     mexc_klines: list[list[float]] | None = None,
     marketcap: float | None = 12345.0,
+    off_exchange_snapshots: dict[str, PriceSnapshot | None] | None = None,
 ) -> CoinService:
     bn = AsyncMock()
     bn.has_pair = AsyncMock(side_effect=lambda s: s in (binance_pairs or set()))
@@ -46,7 +53,15 @@ def _service(
     mc.fetch_rank = AsyncMock(return_value=None)
     mc.aclose = AsyncMock()
 
-    return CoinService(binance=bn, bybit=bb, mexc=mx, marketcap=mc)
+    off: AsyncMock | None = None
+    if off_exchange_snapshots is not None:
+        snapshots = off_exchange_snapshots
+        off = AsyncMock()
+        off.fetch_price_snapshot = AsyncMock(side_effect=lambda s: snapshots.get(s))
+
+    return CoinService(
+        binance=bn, bybit=bb, mexc=mx, marketcap=mc, off_exchange=off
+    )
 
 
 @pytest.mark.asyncio
@@ -196,3 +211,98 @@ async def test_usd_rate_returns_none_when_price_invalid() -> None:
     }
     svc = _service(binance_pairs={"BAD"}, binance_ticker=ticker)
     assert await svc.usd_rate("BAD") is None
+
+
+# ---------------------------------------------------------------------------
+# Off-exchange (CoinPaprika) fallback for thinly-listed coins.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_falls_back_to_off_exchange_when_no_listing() -> None:
+    snap = PriceSnapshot(symbol="OCT", price_usd=0.057, market_cap_usd=34_260_000)
+    svc = _service(off_exchange_snapshots={"OCT": snap})
+    ref = await svc.resolve("OCT")
+    assert ref == CoinRef(symbol="OCT", pair="OCT/USD", source=OFF_EXCHANGE_SOURCE)
+
+
+@pytest.mark.asyncio
+async def test_resolve_skips_off_exchange_when_an_exchange_lists_it() -> None:
+    snap = PriceSnapshot(symbol="BTC", price_usd=999.0)  # should never be used
+    svc = _service(binance_pairs={"BTC"}, off_exchange_snapshots={"BTC": snap})
+    ref = await svc.resolve("BTC")
+    assert ref == CoinRef(symbol="BTC", pair="BTCUSDT", source="binance")
+
+
+@pytest.mark.asyncio
+async def test_resolve_returns_none_when_off_exchange_also_unknown() -> None:
+    svc = _service(off_exchange_snapshots={})
+    assert await svc.resolve("ZZZNOPE") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_skips_off_exchange_for_zero_price() -> None:
+    snap = PriceSnapshot(symbol="DEAD", price_usd=0.0)
+    svc = _service(off_exchange_snapshots={"DEAD": snap})
+    assert await svc.resolve("DEAD") is None
+
+
+@pytest.mark.asyncio
+async def test_market_uses_off_exchange_snapshot() -> None:
+    snap = PriceSnapshot(
+        symbol="OCT",
+        price_usd=0.057,
+        change_pct_24h=40.1,
+        market_cap_usd=34_260_000.0,
+        volume_quote_24h=1_200_000.0,
+        rank=657,
+    )
+    svc = _service(off_exchange_snapshots={"OCT": snap})
+    ref = await svc.resolve("OCT")
+    assert ref is not None
+    md = await svc.market(ref)
+    assert md.price_usd == pytest.approx(0.057)
+    assert md.price_change_pct_24h == pytest.approx(40.1)
+    assert md.market_cap_usd == pytest.approx(34_260_000.0)
+    assert md.market_cap_rank == 657
+    assert md.source == OFF_EXCHANGE_SOURCE
+    assert md.pair == "OCT/USD"
+
+
+@pytest.mark.asyncio
+async def test_market_off_exchange_falls_back_to_marketcap_aggregator() -> None:
+    snap = PriceSnapshot(
+        symbol="THIN", price_usd=1.23, market_cap_usd=None, rank=None
+    )
+    svc = _service(
+        off_exchange_snapshots={"THIN": snap}, marketcap=999_000.0
+    )
+    ref = await svc.resolve("THIN")
+    assert ref is not None
+    md = await svc.market(ref)
+    # Snapshot didn't include marketcap → fall back to aggregator's value.
+    assert md.market_cap_usd == pytest.approx(999_000.0)
+
+
+@pytest.mark.asyncio
+async def test_candles_raises_for_off_exchange_source() -> None:
+    snap = PriceSnapshot(symbol="OCT", price_usd=0.057)
+    svc = _service(off_exchange_snapshots={"OCT": snap})
+    ref = await svc.resolve("OCT")
+    assert ref is not None
+    with pytest.raises(CoinNotFound):
+        await svc.candles(ref=ref, timeframe=get_timeframe("1d"))
+
+
+@pytest.mark.asyncio
+async def test_usd_rate_uses_off_exchange_snapshot() -> None:
+    snap = PriceSnapshot(symbol="OCT", price_usd=0.057)
+    svc = _service(off_exchange_snapshots={"OCT": snap})
+    assert await svc.usd_rate("OCT") == pytest.approx(0.057)
+
+
+@pytest.mark.asyncio
+async def test_usd_rate_off_exchange_rejects_bad_price() -> None:
+    snap = PriceSnapshot(symbol="OCT", price_usd=float("nan"))
+    svc = _service(off_exchange_snapshots={"OCT": snap})
+    assert await svc.usd_rate("OCT") is None
