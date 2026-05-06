@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -140,6 +141,24 @@ class CoinService:
         if not rows:
             raise CoinNotFoundError(f"no candles for {ref.pair} on {ref.source}")
         return rows
+
+    async def usd_rate(self, symbol: str) -> float | None:
+        """Return the USD price of ``symbol`` from the first exchange that
+        lists it, or ``None`` if the symbol isn't tradeable on any of our
+        sources. Used as a fallback for the FX layer when the upstream
+        currency feed doesn't know about a coin (e.g. small-cap altcoins).
+        """
+        ref = await self.resolve(symbol)
+        if ref is None:
+            return None
+        ticker = await self._fetch_ticker(ref)
+        if ticker is None:
+            return None
+        raw = ticker.get("price")
+        value = _maybe_float(raw)
+        if value is None or value <= 0 or not math.isfinite(value):
+            return None
+        return value
 
     async def _fetch_ticker(self, ref: CoinRef) -> dict[str, float | None] | None:
         if ref.source == "binance":

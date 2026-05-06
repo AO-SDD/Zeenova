@@ -36,6 +36,24 @@ _UN_OPS: Final[dict[type[ast.unaryop], Callable[[float], float]]] = {
 # pathological inputs like deeply-nested parens.
 _MAX_EXPR_LEN = 200
 
+# Numeric magnitude suffixes: ``1k`` = 1 000, ``2.5m`` = 2 500 000, etc. The
+# negative lookahead prevents matching inside longer letter runs (e.g. ``1mb``
+# stays unparseable rather than expanding to ``(1*1_000_000)b``).
+_SUFFIX_MULTIPLIERS: Final[dict[str, int]] = {
+    "k": 1_000,
+    "m": 1_000_000,
+    "b": 1_000_000_000,
+    "t": 1_000_000_000_000,
+}
+_SUFFIX_RE = re.compile(r"(\d+(?:\.\d+)?)([kmbtKMBT])(?![A-Za-z])")
+
+
+def _expand_suffixes(expr: str) -> str:
+    return _SUFFIX_RE.sub(
+        lambda m: f"({m.group(1)}*{_SUFFIX_MULTIPLIERS[m.group(2).lower()]})",
+        expr,
+    )
+
 
 class CalcError(ValueError):
     """Raised when an expression isn't a pure arithmetic computation."""
@@ -56,10 +74,16 @@ def safe_eval(expr: str) -> float:
     # almost always mean ``2**10`` rather than the bitwise XOR Python gives
     # them by default.
     expr = expr.replace("^", "**")
+    # Then expand magnitude suffixes (``1k`` → ``(1*1000)``, ``2.5m`` →
+    # ``(2.5*1000000)``) so the AST parser only has to deal with plain
+    # numeric literals.
+    expr = _expand_suffixes(expr)
     try:
         tree = ast.parse(expr, mode="eval")
     except SyntaxError as exc:
-        raise CalcError(f"invalid syntax: {exc.msg}") from exc
+        # ``exc.msg`` is usually already ``"invalid syntax"``; don't prefix
+        # again or the user sees ``"invalid syntax: invalid syntax"``.
+        raise CalcError(exc.msg or "invalid syntax") from exc
     try:
         value = _eval(tree.body)
     except ZeroDivisionError as exc:
@@ -98,11 +122,15 @@ def _eval(node: ast.AST) -> float:
 #
 # - The expression must contain at least one digit so that bare symbols
 #   like ``BTC`` keep flowing through to the existing price-card path.
-# - Currency tokens are 2-8 ASCII letters.
+# - The k/m/b/t magnitude suffixes are part of the body so ``1k+1`` parses
+#   as a single arithmetic expression rather than ``1`` + currency ``k+1``.
+# - Currency tokens are 2-8 ASCII letters and must be separated from the
+#   expression by whitespace, so a trailing currency stays distinct from a
+#   suffix glued to a number.
 _CALC_RE = re.compile(
     r"""
     ^\s*
-    (?P<expr>[\d+\-*/.()\s%^]+?)         # arithmetic body
+    (?P<expr>[\d+\-*/.()\s%^kmbtKMBT]+?) # arithmetic body
     (?:\s+(?P<ccy1>[A-Za-z]{2,8}))?      # optional from-currency
     (?:\s+(?P<ccy2>[A-Za-z]{2,8}))?      # optional to-currency
     \s*$
