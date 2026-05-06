@@ -13,7 +13,9 @@ from typing import Final
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InlineQueryResultArticle,
     InputMediaPhoto,
+    InputTextMessageContent,
     Update,
 )
 from telegram.constants import ChatType, ParseMode
@@ -23,6 +25,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    InlineQueryHandler,
     MessageHandler,
     filters,
 )
@@ -33,7 +36,13 @@ from .card import render_price_card
 from .chart import render_candles
 from .config import Settings
 from .fx import FxClient
-from .services import OFF_EXCHANGE_SOURCE, CoinNotFound, CoinRef, CoinService
+from .services import (
+    OFF_EXCHANGE_SOURCE,
+    CoinNotFound,
+    CoinRef,
+    CoinService,
+    MarketData,
+)
 from .timeframes import DEFAULT_TIMEFRAME, TIMEFRAMES, Timeframe, get_timeframe
 
 __all__ = [
@@ -166,6 +175,7 @@ def build_application(
         )
     )
     app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^tf:"))
+    app.add_handler(InlineQueryHandler(on_inline_query))
     app.add_error_handler(on_error)
     return app
 
@@ -485,6 +495,125 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await query.answer(
             "Sorry, something went wrong. Try again.", show_alert=False
         )
+
+
+# ---------------------------------------------------------------------------
+# Inline mode: ``@zeenovabot btc`` in any chat returns a tappable price card.
+# ---------------------------------------------------------------------------
+
+
+# Cap how long the inline query can be. Telegram already limits inline
+# queries to 256 chars, but symbols never go past ~12 so a tighter local
+# cap helps short-circuit junk like pasted addresses.
+_INLINE_QUERY_MAX = 32
+
+# Cache inline answers for ~30s. Telegram caches the result list per query
+# *string* across all users, so a stale snapshot wouldn't survive long even
+# without this — but 30s is a sweet spot between freshness and not hammering
+# our exchanges every keystroke.
+_INLINE_CACHE_SECONDS = 30
+
+
+def _inline_title(md: MarketData) -> str:
+    """One-line summary shown in the inline result picker."""
+    pct = md.price_change_pct_24h
+    arrow = "▲" if pct is not None and pct >= 0 else "▼"
+    change = f" {arrow} {pct:+.2f}%" if pct is not None else ""
+    return f"{md.symbol} — ${md.price_usd:,.6g}{change}"
+
+
+def _inline_description(md: MarketData) -> str:
+    """Sub-line in the inline result picker (rank + marketcap)."""
+    parts: list[str] = []
+    if md.market_cap_rank is not None and md.market_cap_rank > 0:
+        parts.append(f"#{md.market_cap_rank}")
+    if md.market_cap_usd is not None and md.market_cap_usd > 0:
+        cap = md.market_cap_usd
+        for label, scale in (("T", 1e12), ("B", 1e9), ("M", 1e6)):
+            if cap >= scale:
+                parts.append(f"MCap {cap / scale:.2f}{label}")
+                break
+        else:
+            parts.append(f"MCap ${cap:,.0f}")
+    parts.append("Tap to send the full price card")
+    return " · ".join(parts)
+
+
+async def on_inline_query(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Answer ``@zeenovabot <symbol>`` queries with a tappable price card.
+
+    The result is a single :class:`InlineQueryResultArticle` whose body
+    is the same HTML price-card we send for ``/p`` lookups. We resolve
+    the symbol through the regular :class:`CoinService` pipeline so
+    coverage matches the rest of the bot (Binance/Bybit/MEXC + the
+    CoinPaprika off-exchange fallback).
+    """
+    iq = update.inline_query
+    if iq is None:
+        return
+    raw = iq.query.strip()
+    if not raw or len(raw) > _INLINE_QUERY_MAX:
+        # Empty or absurdly long queries get an empty-but-cached answer.
+        # Returning [] still answers the query so Telegram doesn't keep
+        # spinning.
+        await iq.answer([], cache_time=_INLINE_CACHE_SECONDS, is_personal=False)
+        return
+
+    # Allow leading ``$`` (``$btc``) and any extra whitespace, then
+    # validate against the same shape used by free-text symbol matches
+    # so we don't accidentally try to "resolve" an English sentence.
+    candidate = raw.lstrip("$").strip()
+    if not _SYMBOL_RE.match(candidate):
+        await iq.answer([], cache_time=_INLINE_CACHE_SECONDS, is_personal=False)
+        return
+
+    service: CoinService = context.bot_data["service"]
+    settings: Settings = context.bot_data["settings"]
+
+    try:
+        ref = await service.resolve(candidate)
+    except Exception:  # noqa: BLE001 — never let an inline query crash the bot
+        logger.exception("inline: resolve failed for %r", candidate)
+        await iq.answer([], cache_time=_INLINE_CACHE_SECONDS, is_personal=False)
+        return
+    if ref is None:
+        await iq.answer([], cache_time=_INLINE_CACHE_SECONDS, is_personal=False)
+        return
+
+    try:
+        md = await service.market(ref)
+    except CoinNotFound:
+        await iq.answer([], cache_time=_INLINE_CACHE_SECONDS, is_personal=False)
+        return
+    except Exception:  # noqa: BLE001
+        logger.exception("inline: market fetch failed for %s", ref.symbol)
+        await iq.answer([], cache_time=_INLINE_CACHE_SECONDS, is_personal=False)
+        return
+
+    body = render_price_card(
+        md,
+        channel_name=settings.channel_name,
+        channel_url=settings.telegram_channel_url,
+        group_name=settings.group_name,
+        group_url=settings.telegram_group_url,
+    )
+    result = InlineQueryResultArticle(
+        # Stable per (symbol, source) so Telegram dedups multiple users
+        # picking the same suggestion within the cache window.
+        id=f"price:{md.source}:{md.symbol}",
+        title=_inline_title(md),
+        description=_inline_description(md),
+        input_message_content=InputTextMessageContent(
+            message_text=body,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        ),
+    )
+    await iq.answer(
+        [result], cache_time=_INLINE_CACHE_SECONDS, is_personal=False
+    )
 
 
 async def _send_card(
