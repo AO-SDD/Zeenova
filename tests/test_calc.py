@@ -103,6 +103,51 @@ class TestSafeEval:
             safe_eval("3++")
         assert "invalid syntax: invalid syntax" not in str(exc_info.value)
 
+    @pytest.mark.parametrize(
+        "expr,expected",
+        [
+            # Bare integer with leading zeros — Python rejects without our
+            # pre-pass.
+            ("0294882", 294882.0),
+            ("00", 0.0),
+            ("007", 7.0),
+            # Inside an expression.
+            ("1+0294", 295.0),
+            ("0294*2", 588.0),
+            ("0294/0007", 42.0),
+            # The reported user input that triggered the regression.
+            (
+                "1/394920*0294882+2719+39201/2",
+                1 / 394920 * 294882 + 2719 + 39201 / 2,
+            ),
+            # Floats with leading zero on the integer part — must still work.
+            ("01.5", 1.5),
+            ("0294.5", 294.5),
+        ],
+    )
+    def test_leading_zeros_accepted(self, expr: str, expected: float) -> None:
+        assert safe_eval(expr) == pytest.approx(expected)
+
+    @pytest.mark.parametrize(
+        "expr,expected",
+        [
+            # The leading zero in ``0.5`` is part of a float literal, not a
+            # padded integer; it must survive untouched.
+            ("0.5", 0.5),
+            ("0.02", 0.02),
+            # Fractional zeros after the dot in a float must not be stripped.
+            ("1.02", 1.02),
+            ("1.0294882", 1.0294882),
+            # A bare zero must not collapse into nothing.
+            ("0", 0.0),
+            ("0+5", 5.0),
+        ],
+    )
+    def test_leading_zero_rewrite_does_not_break_floats(
+        self, expr: str, expected: float
+    ) -> None:
+        assert safe_eval(expr) == pytest.approx(expected)
+
 
 class TestParseInput:
     def test_pure_math(self) -> None:
