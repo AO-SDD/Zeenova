@@ -162,7 +162,12 @@ async def test_paprika_picks_lowest_rank_per_symbol() -> None:
     ]
 
     ticker_payload: dict[str, Any] = {
-        "quotes": {"USD": {"market_cap": 1_500_000_000_000.0}}
+        "rank": 1,
+        # Real CoinPaprika /tickers responses always carry the live price
+        # alongside the marketcap; we mock that shape here so
+        # ``fetch_marketcap`` (which now goes through the snapshot path)
+        # gets a usable row.
+        "quotes": {"USD": {"price": 60_000.0, "market_cap": 1_500_000_000_000.0}},
     }
 
     async def fake_get(path: str, params: dict[str, Any] | None = None) -> Any:
@@ -216,4 +221,78 @@ async def test_paprika_handles_http_error_gracefully() -> None:
 
     client._get = fake_get  # type: ignore[method-assign]
     assert await client.fetch_marketcap("BTC") is None
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_paprika_fetch_price_snapshot_returns_full_payload() -> None:
+    client = CoinPaprikaClient()
+    coins_payload = [
+        {
+            "id": "oct-octra",
+            "symbol": "OCT",
+            "rank": 657,
+            "is_active": True,
+            "type": "coin",
+        }
+    ]
+    ticker_payload = {
+        "rank": 657,
+        "quotes": {
+            "USD": {
+                "price": 0.057,
+                "percent_change_24h": 40.1,
+                "market_cap": 34_260_000.0,
+                "volume_24h": 1_200_000.0,
+            }
+        },
+    }
+
+    async def fake_get(path: str, params: dict[str, Any] | None = None) -> Any:
+        if path == "/coins":
+            return coins_payload
+        if path == "/tickers/oct-octra":
+            return ticker_payload
+        raise AssertionError(f"unexpected path {path}")
+
+    client._get = fake_get  # type: ignore[method-assign]
+    snap = await client.fetch_price_snapshot("OCT")
+    assert snap is not None
+    assert snap.symbol == "OCT"
+    assert snap.price_usd == pytest.approx(0.057)
+    assert snap.change_pct_24h == pytest.approx(40.1)
+    assert snap.market_cap_usd == pytest.approx(34_260_000.0)
+    assert snap.volume_quote_24h == pytest.approx(1_200_000.0)
+    assert snap.rank == 657
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_paprika_fetch_price_snapshot_unknown_symbol_returns_none() -> None:
+    client = CoinPaprikaClient()
+
+    async def fake_get(path: str, params: dict[str, Any] | None = None) -> Any:
+        if path == "/coins":
+            return []
+        raise AssertionError(f"unexpected path {path}")
+
+    client._get = fake_get  # type: ignore[method-assign]
+    assert await client.fetch_price_snapshot("ZZZNOPE") is None
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_paprika_fetch_price_snapshot_zero_price_returns_none() -> None:
+    client = CoinPaprikaClient()
+    coins_payload = [
+        {"id": "dead-coin", "symbol": "DEAD", "rank": 5, "is_active": True, "type": "coin"}
+    ]
+
+    async def fake_get(path: str, params: dict[str, Any] | None = None) -> Any:
+        if path == "/coins":
+            return coins_payload
+        return {"quotes": {"USD": {"price": 0.0}}}
+
+    client._get = fake_get  # type: ignore[method-assign]
+    assert await client.fetch_price_snapshot("DEAD") is None
     await client.aclose()
