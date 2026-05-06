@@ -51,6 +51,11 @@ _SYMBOL_RE = re.compile(r"^\$?([A-Za-z][A-Za-z0-9]{1,11})$")
 # contains at least one of these, we always reply with either a result or
 # a parse error — silently dropping it would leave the user wondering.
 _CALC_OPS = set("+-*/%^")
+# A "strong" calc operator unambiguously signals the user is doing math
+# (as opposed to typing a casual number with a percent sign). ``%`` is
+# excluded because people commonly write "50%" in chat to mean "fifty
+# percent" without expecting a calculation.
+_STRONG_CALC_OPS = set("+-*/^")
 
 # matplotlib + mplfinance touch pyplot's global figure manager, which is not
 # thread-safe. We render charts off the event loop on a single worker thread
@@ -283,15 +288,34 @@ async def _handle_calc(
     expr, ccy1, ccy2 = parsed
 
     has_op = any(c in expr for c in _CALC_OPS)
+    has_strong_op = any(c in expr for c in _STRONG_CALC_OPS)
     has_ccy = ccy1 is not None
     if not has_op and not has_ccy:
         # Bare number with no operator and no currency — nothing useful to
         # echo back; let it drop silently.
         return False
 
+    # In groups, a bare ``50%`` (no other operator, no currency) is almost
+    # always casual conversation rather than a math request. Stay silent
+    # so the bot doesn't blurt "= 0.5" into every chat where someone
+    # mentions a percentage.
+    chat = update.effective_chat
+    in_group = chat is not None and chat.type in {
+        ChatType.GROUP,
+        ChatType.SUPERGROUP,
+    }
+    if in_group and not has_strong_op and not has_ccy:
+        return False
+
     try:
         value = safe_eval(expr)
     except CalcError as exc:
+        # In groups, swallow parse errors silently when the message
+        # didn't have a strong calc signal — otherwise the bot blurts
+        # "Math error: invalid syntax" at every stray ``50%`` or ``5/``
+        # someone types in chat.
+        if in_group and not has_strong_op and not has_ccy:
+            return False
         await msg.reply_text(f"⚠️ Math error: {exc}")
         return True
 

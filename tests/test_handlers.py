@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from telegram.constants import ChatType
 
 from zeenova_bot.handlers import _handle_calc, convert_with_fallback
 
@@ -104,12 +105,20 @@ async def test_same_currency_returns_amount_unchanged() -> None:
     assert await convert_with_fallback(fx, svc, 42.0, "USD", "usd") == pytest.approx(42.0)
 
 
-def _calc_update_context(text: str, fx: AsyncMock, svc: AsyncMock) -> tuple[MagicMock, MagicMock]:
+def _calc_update_context(
+    text: str,
+    fx: AsyncMock,
+    svc: AsyncMock,
+    chat_type: ChatType = ChatType.PRIVATE,
+) -> tuple[MagicMock, MagicMock]:
     """Wire up a minimal Update + Context pair for ``_handle_calc``."""
     msg = MagicMock()
     msg.reply_text = AsyncMock()
     update = MagicMock()
     update.effective_message = msg
+    chat = MagicMock()
+    chat.type = chat_type
+    update.effective_chat = chat
     context = MagicMock()
     context.bot_data = {"fx": fx, "service": svc}
     return update, context
@@ -254,3 +263,83 @@ async def test_pure_fiat_symbol_falls_through_to_fx() -> None:
     # 5 * (1/50) = 0.1 USD
     assert "0.1" in reply
     assert "USD" in reply
+
+
+# ---------------------------------------------------------------------------
+# Calculator-style percent + group-chat noise suppression.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_percent_evaluates_in_dm() -> None:
+    """``100+10%`` returns 110 (calculator-style) in a DM."""
+    fx = _fx_returning({})
+    svc = _service_with({})
+    update, context = _calc_update_context(
+        "100+10%", fx, svc, chat_type=ChatType.PRIVATE
+    )
+    assert await _handle_calc(update, context, "100+10%") is True
+    reply = _last_reply(update.effective_message)
+    assert "100+10%" in reply
+    assert "110" in reply
+
+
+@pytest.mark.asyncio
+async def test_bare_percent_silent_in_group() -> None:
+    """Regression: bare ``50%`` in a group must NOT trigger any reply.
+
+    Before this fix the bot would blurt "Math error: invalid syntax" at
+    every ``50%`` someone typed; after percent support landed it would
+    blurt ``= 0.5`` instead. Both are noise — in groups we treat bare
+    percent literals as casual conversation and stay silent.
+    """
+    fx = _fx_returning({})
+    svc = _service_with({})
+    update, context = _calc_update_context(
+        "50%", fx, svc, chat_type=ChatType.GROUP
+    )
+    assert await _handle_calc(update, context, "50%") is False
+    update.effective_message.reply_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_bare_percent_evaluates_in_dm() -> None:
+    """In a private chat we *do* respond to a bare ``50%`` (= 0.5)."""
+    fx = _fx_returning({})
+    svc = _service_with({})
+    update, context = _calc_update_context(
+        "50%", fx, svc, chat_type=ChatType.PRIVATE
+    )
+    assert await _handle_calc(update, context, "50%") is True
+    reply = _last_reply(update.effective_message)
+    assert "0.5" in reply
+
+
+@pytest.mark.asyncio
+async def test_real_math_in_group_still_replies() -> None:
+    """``100+10%`` (real arithmetic) in a group should still respond."""
+    fx = _fx_returning({})
+    svc = _service_with({})
+    update, context = _calc_update_context(
+        "100+10%", fx, svc, chat_type=ChatType.GROUP
+    )
+    assert await _handle_calc(update, context, "100+10%") is True
+    reply = _last_reply(update.effective_message)
+    assert "110" in reply
+
+
+@pytest.mark.asyncio
+async def test_invalid_syntax_silent_in_group() -> None:
+    """``50%foo`` in a group: parses but fails — must not surface error."""
+    fx = _fx_returning({})
+    svc = _service_with({})
+    # Crafted input: looks like a calc body but won't actually evaluate
+    # cleanly. With the suppression in place no reply happens.
+    update, context = _calc_update_context(
+        "5/", fx, svc, chat_type=ChatType.GROUP
+    )
+    # ``5/`` reaches _handle_calc with a strong op (`/`) but it's a
+    # parse error — strong-op messages always get a reply, even in groups.
+    assert await _handle_calc(update, context, "5/") is True
+    reply = _last_reply(update.effective_message)
+    assert "Math error" in reply

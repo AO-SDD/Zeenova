@@ -175,6 +175,8 @@ async def test_paprika_picks_lowest_rank_per_symbol() -> None:
             return coins_payload
         if path == "/tickers/btc-bitcoin":
             return ticker_payload
+        if path == "/coins/btc-bitcoin/ohlcv/today":
+            return []  # high/low not available is fine here
         raise AssertionError(f"unexpected path {path}")
 
     client._get = fake_get  # type: ignore[method-assign]
@@ -248,11 +250,24 @@ async def test_paprika_fetch_price_snapshot_returns_full_payload() -> None:
         },
     }
 
+    ohlcv_payload = [
+        {
+            "time_open": "2026-05-06T00:00:00Z",
+            "high": 0.060,
+            "low": 0.039,
+            "open": 0.045,
+            "close": 0.057,
+            "volume": 918395,
+        }
+    ]
+
     async def fake_get(path: str, params: dict[str, Any] | None = None) -> Any:
         if path == "/coins":
             return coins_payload
         if path == "/tickers/oct-octra":
             return ticker_payload
+        if path == "/coins/oct-octra/ohlcv/today":
+            return ohlcv_payload
         raise AssertionError(f"unexpected path {path}")
 
     client._get = fake_get  # type: ignore[method-assign]
@@ -264,6 +279,8 @@ async def test_paprika_fetch_price_snapshot_returns_full_payload() -> None:
     assert snap.market_cap_usd == pytest.approx(34_260_000.0)
     assert snap.volume_quote_24h == pytest.approx(1_200_000.0)
     assert snap.rank == 657
+    assert snap.high_24h == pytest.approx(0.060)
+    assert snap.low_24h == pytest.approx(0.039)
     await client.aclose()
 
 
