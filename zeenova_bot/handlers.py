@@ -472,22 +472,46 @@ async def _to_usd_rate(
     Resolution order:
 
     1. ``USD`` and the entries in :data:`_KNOWN_USD_RATES` short-circuit.
-    2. Live crypto exchange price (Binance/Bybit/MEXC). We check this
-       *before* the FX feed because some 3-letter codes are reused
-       between fiat and crypto — e.g. ``MNT`` is both Mongolian tugrik
-       (fiat, ~$0.0003) and Mantle (crypto, ~$0.66). Users sending
-       ``20 mnt`` to a price bot almost always mean the crypto.
-    3. The fawazahmed0 FX feed for fiat-only symbols.
+    2. **Major-exchange** crypto (Binance / Bybit / MEXC). We check
+       this before the FX feed because some 3-letter codes are reused
+       between fiat and crypto — e.g. ``MNT`` is both Mongolian Tugrik
+       (fiat, ~$0.0003) and Mantle (crypto on MEXC, ~$0.66); ``20 mnt``
+       to a price bot almost always means the crypto.
+    3. The fawazahmed0 FX feed for legitimate fiats — including the
+       ones that *also* have a junk crypto with the same ticker on a
+       small aggregator (``EGP`` and ``TRY`` are the worst offenders:
+       a $200k-cap scam token sits at the same ticker as the Egyptian
+       Pound and the Turkish Lira respectively).
+    4. Off-exchange aggregator (CoinPaprika) for thin-listed coins
+       like ``OCT`` that no major spot exchange and no FX feed list.
     """
     lower = ccy.lower()
     if lower == "usd":
         return 1.0
     if lower in _KNOWN_USD_RATES:
         return _KNOWN_USD_RATES[lower]
-    crypto = await service.usd_rate(ccy.upper())
-    if crypto is not None:
-        return crypto
-    return await fx.convert(1.0, ccy, "usd")
+    sym = ccy.upper()
+    # If a major exchange lists this symbol, trust the crypto price —
+    # only Binance/Bybit/MEXC count, not the off-exchange aggregator.
+    ref = await service.resolve(sym)
+    if ref is not None and ref.source != OFF_EXCHANGE_SOURCE:
+        crypto = await service.usd_rate(sym)
+        if crypto is not None:
+            return crypto
+    # Try the FX feed before any off-exchange match. This is the
+    # crucial step: it stops a $200k-cap "EGP" token from masking the
+    # Egyptian Pound, while still letting OCT (no FX listing) through
+    # to the off-exchange tail below.
+    fx_rate = await fx.convert(1.0, ccy, "usd")
+    if fx_rate is not None:
+        return fx_rate
+    # Fall back to the off-exchange aggregator (CoinPaprika) for thin
+    # coins like OCT.
+    if ref is not None and ref.source == OFF_EXCHANGE_SOURCE:
+        crypto = await service.usd_rate(sym)
+        if crypto is not None:
+            return crypto
+    return None
 
 
 async def convert_with_fallback(
