@@ -34,6 +34,7 @@ from .calc import CalcError, safe_eval
 from .calc import parse_input as parse_calc_input
 from .card import render_price_card
 from .chart import render_candles
+from .coinpaprika import GlobalSnapshot, TickerSnapshot
 from .config import Settings
 from .fx import FxClient
 from .services import (
@@ -100,6 +101,11 @@ def _help_text(settings: Settings) -> str:
         "• Coverage includes every major exchange listing <b>plus</b> "
         "thin-listed coins tracked by aggregators (so coins like OCT or "
         "OPG still resolve).\n\n"
+        "<b>📊 Market overview</b>\n"
+        "• <code>/market</code> — total marketcap, 24h volume, BTC "
+        "dominance, and the active coin count.\n"
+        "• <code>/top</code> — the day's biggest gainers and losers from "
+        "the top 100 coins by marketcap.\n\n"
         "<b>🧮 Calculator &amp; conversion</b>\n"
         "• Plain math with full operator precedence — "
         "<code>2+2/4</code>, <code>(1+2)*3</code>, <code>2^10</code>, "
@@ -169,6 +175,8 @@ def build_application(
 
     app.add_handler(CommandHandler(["start", "help"], cmd_help))
     app.add_handler(CommandHandler(["p", "price"], cmd_price))
+    app.add_handler(CommandHandler(["top", "movers"], cmd_top))
+    app.add_handler(CommandHandler(["market", "global"], cmd_market))
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & ~filters.UpdateType.EDITED, on_text
@@ -210,6 +218,163 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         symbol=symbol,
         timeframe=DEFAULT_TIMEFRAME,
         notify_if_unknown=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# /top and /market — global market snapshot + day's biggest movers.
+# ---------------------------------------------------------------------------
+
+
+# Pull this many rows from /tickers before sorting. 100 is the typical
+# "top by marketcap" cut-off and keeps obscure microcaps with insane
+# percent swings out of the result.
+_TOP_UNIVERSE = 100
+# How many gainers / losers to surface in /top.
+_TOP_N = 5
+
+
+def _fmt_usd_compact(v: float | None) -> str:
+    """Compact USD amount with K/M/B/T suffix, e.g. ``$1.27T``."""
+    if v is None or v <= 0:
+        return "—"
+    for label, scale in (("T", 1e12), ("B", 1e9), ("M", 1e6), ("K", 1e3)):
+        if v >= scale:
+            return f"${v / scale:,.2f}{label}"
+    return f"${v:,.2f}"
+
+
+def _fmt_change_pct(pct: float | None) -> str:
+    if pct is None:
+        return "—"
+    sign = "+" if pct >= 0 else ""
+    return f"{sign}{pct:.2f}%"
+
+
+def _fmt_unit_price(v: float) -> str:
+    """USD price for a single coin, scaled to the value's magnitude."""
+    if v >= 1000:
+        return f"${v:,.2f}"
+    if v >= 1:
+        return f"${v:,.4f}"
+    if v >= 0.01:
+        return f"${v:.4f}"
+    if v >= 0.0001:
+        return f"${v:.6f}"
+    return f"${v:.8f}".rstrip("0").rstrip(".") or "$0"
+
+
+def _render_market(snap: GlobalSnapshot, brand_name: str) -> str:
+    """HTML body for ``/market``."""
+    lines = [
+        f"<b>🌐 {escape(brand_name)} — Global market</b>",
+        "",
+        f"🏛 <b>Total marketcap:</b> {_fmt_usd_compact(snap.market_cap_usd)} "
+        f"({_fmt_change_pct(snap.market_cap_change_24h_pct)} 24h)",
+        f"📊 <b>24H Volume:</b> {_fmt_usd_compact(snap.volume_24h_usd)}",
+    ]
+    if snap.bitcoin_dominance_pct is not None:
+        lines.append(
+            f"🟠 <b>BTC dominance:</b> {snap.bitcoin_dominance_pct:.2f}%"
+        )
+    if snap.cryptocurrencies_number is not None:
+        lines.append(
+            f"🪙 <b>Active coins:</b> {snap.cryptocurrencies_number:,}"
+        )
+    return "\n".join(lines)
+
+
+def _render_top(
+    gainers: list[TickerSnapshot],
+    losers: list[TickerSnapshot],
+    *,
+    universe: int,
+) -> str:
+    """HTML body for ``/top``: top gainers + top losers in 24h."""
+
+    def _rows(rows: list[TickerSnapshot]) -> list[str]:
+        out = []
+        for t in rows:
+            change = _fmt_change_pct(t.change_pct_24h)
+            out.append(
+                f"  <b>{escape(t.symbol)}</b> "
+                f"<i>({escape(t.name)})</i> — "
+                f"{escape(_fmt_unit_price(t.price_usd))}  ·  {escape(change)}"
+            )
+        return out
+
+    lines = [f"<b>📈 Top movers — last 24h (top {universe} by mcap)</b>", ""]
+    lines.append("🟢 <b>Gainers</b>")
+    lines.extend(_rows(gainers) or ["  —"])
+    lines.append("")
+    lines.append("🔴 <b>Losers</b>")
+    lines.extend(_rows(losers) or ["  —"])
+    return "\n".join(lines)
+
+
+async def cmd_market(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reply with a snapshot of total marketcap, BTC dominance, etc."""
+    msg = update.effective_message
+    if msg is None:
+        return
+    paprika = context.bot_data.get("paprika")
+    settings: Settings = context.bot_data["settings"]
+    if paprika is None:
+        await msg.reply_text(
+            "Market data is unavailable right now.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    try:
+        snap = await paprika.fetch_global()
+    except Exception:  # noqa: BLE001
+        logger.exception("/market: fetch_global failed")
+        snap = None
+    if snap is None:
+        await msg.reply_text(
+            "Couldn't reach the market data feed. Try again in a minute.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    await msg.reply_text(
+        _render_market(snap, brand_name=settings.brand_name),
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
+
+
+async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reply with the day's top gainers and losers from the top-N by mcap."""
+    msg = update.effective_message
+    if msg is None:
+        return
+    paprika = context.bot_data.get("paprika")
+    if paprika is None:
+        await msg.reply_text(
+            "Top movers data is unavailable right now.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    try:
+        rows = await paprika.fetch_top_tickers(_TOP_UNIVERSE)
+    except Exception:  # noqa: BLE001
+        logger.exception("/top: fetch_top_tickers failed")
+        rows = []
+    if not rows:
+        await msg.reply_text(
+            "Couldn't reach the market data feed. Try again in a minute.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    # Sort ascending → losers; descending → gainers. We sort the same
+    # universe twice to keep the implementation obvious.
+    by_change = sorted(rows, key=lambda t: t.change_pct_24h)
+    losers = by_change[:_TOP_N]
+    gainers = list(reversed(by_change[-_TOP_N:]))
+    await msg.reply_text(
+        _render_top(gainers, losers, universe=_TOP_UNIVERSE),
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
     )
 
 
