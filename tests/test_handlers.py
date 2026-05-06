@@ -410,3 +410,132 @@ def test_help_keyboard_returns_none_without_username() -> None:
     """Before PTB has fetched its identity we must not render a broken URL."""
     assert _help_keyboard(None, _settings()) is None
     assert _help_keyboard("", _settings()) is None
+
+
+# ---------------------------------------------------------------------------
+# Inline mode (@bot btc) -> tappable price card.
+# ---------------------------------------------------------------------------
+
+
+def _inline_update_context(
+    query_text: str,
+    *,
+    resolve_ref: object | None = None,
+    market_data: object | None = None,
+    market_raises: BaseException | None = None,
+) -> tuple[MagicMock, MagicMock]:
+    """Build an Update with an inline_query and a wired CoinService mock."""
+    iq = MagicMock()
+    iq.query = query_text
+    iq.answer = AsyncMock()
+    update = MagicMock()
+    update.inline_query = iq
+
+    service = MagicMock()
+    service.resolve = AsyncMock(return_value=resolve_ref)
+    if market_raises is not None:
+        service.market = AsyncMock(side_effect=market_raises)
+    else:
+        service.market = AsyncMock(return_value=market_data)
+
+    context = MagicMock()
+    context.bot_data = {"service": service, "settings": _settings()}
+    return update, context
+
+
+def _make_market_data(symbol: str = "BTC", price: float = 60000.0) -> object:
+    """Build a MarketData stand-in for inline-mode tests."""
+    from zeenova_bot.services import MarketData
+
+    return MarketData(
+        symbol=symbol,
+        pair=f"{symbol}USDT",
+        source="binance",
+        price_usd=price,
+        price_change_pct_24h=2.5,
+        high_24h=price * 1.02,
+        low_24h=price * 0.98,
+        market_cap_usd=1.2e12,
+        total_volume_usd_24h=4.5e10,
+        market_cap_rank=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_inline_query_returns_article_for_known_symbol() -> None:
+    """``@bot btc`` returns one InlineQueryResultArticle with the price card."""
+    from zeenova_bot.handlers import on_inline_query
+    from zeenova_bot.services import CoinRef
+
+    ref = CoinRef(symbol="BTC", pair="BTCUSDT", source="binance")
+    md = _make_market_data()
+    update, context = _inline_update_context(
+        "btc", resolve_ref=ref, market_data=md
+    )
+    await on_inline_query(update, context)
+    update.inline_query.answer.assert_awaited_once()
+    args, kwargs = update.inline_query.answer.call_args
+    results = args[0]
+    assert len(results) == 1
+    article = results[0]
+    assert article.title.startswith("BTC")
+    # The body of the article is the standard price card HTML.
+    assert "BTC" in article.input_message_content.message_text
+    assert "Price" in article.input_message_content.message_text
+    assert kwargs.get("cache_time") is not None
+
+
+@pytest.mark.asyncio
+async def test_inline_query_strips_dollar_prefix() -> None:
+    """``@bot $eth`` resolves the same as ``@bot eth``."""
+    from zeenova_bot.handlers import on_inline_query
+    from zeenova_bot.services import CoinRef
+
+    ref = CoinRef(symbol="ETH", pair="ETHUSDT", source="binance")
+    md = _make_market_data(symbol="ETH", price=3000.0)
+    update, context = _inline_update_context(
+        "$eth", resolve_ref=ref, market_data=md
+    )
+    await on_inline_query(update, context)
+    # service.resolve should have been called with the cleaned token.
+    assert context.bot_data["service"].resolve.await_args.args[0] == "eth"
+    args, _ = update.inline_query.answer.call_args
+    assert len(args[0]) == 1
+
+
+@pytest.mark.asyncio
+async def test_inline_query_empty_returns_empty_results() -> None:
+    """Empty inline query is answered with an empty list (no spinner)."""
+    from zeenova_bot.handlers import on_inline_query
+
+    update, context = _inline_update_context("")
+    await on_inline_query(update, context)
+    args, _ = update.inline_query.answer.call_args
+    assert args[0] == []
+    # We must never bother the resolver for empty queries.
+    context.bot_data["service"].resolve.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_inline_query_unknown_symbol_returns_empty() -> None:
+    """Unresolved symbols produce an empty result list, not an exception."""
+    from zeenova_bot.handlers import on_inline_query
+
+    update, context = _inline_update_context(
+        "zzznope", resolve_ref=None
+    )
+    await on_inline_query(update, context)
+    args, _ = update.inline_query.answer.call_args
+    assert args[0] == []
+
+
+@pytest.mark.asyncio
+async def test_inline_query_garbage_skips_resolve() -> None:
+    """Strings that don't look like a symbol short-circuit before any I/O."""
+    from zeenova_bot.handlers import on_inline_query
+
+    update, context = _inline_update_context("hello world this is not a coin")
+    await on_inline_query(update, context)
+    args, _ = update.inline_query.answer.call_args
+    assert args[0] == []
+    context.bot_data["service"].resolve.assert_not_called()
