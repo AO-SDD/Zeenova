@@ -388,6 +388,9 @@ def test_help_text_advertises_core_features() -> None:
     # the new behaviours.
     assert "100+10%" in body
     assert "Group-friendly" in body
+    # /market + /top get billing in the help text.
+    assert "/market" in body
+    assert "/top" in body
 
 
 def test_help_keyboard_has_add_me_and_links() -> None:
@@ -539,3 +542,210 @@ async def test_inline_query_garbage_skips_resolve() -> None:
     args, _ = update.inline_query.answer.call_args
     assert args[0] == []
     context.bot_data["service"].resolve.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# /top and /market
+# ---------------------------------------------------------------------------
+
+
+def _ticker(
+    symbol: str,
+    name: str,
+    rank: int,
+    price: float,
+    change: float,
+    cap: float | None = 1e9,
+) -> object:
+    from zeenova_bot.coinpaprika import TickerSnapshot
+
+    return TickerSnapshot(
+        symbol=symbol,
+        name=name,
+        rank=rank,
+        price_usd=price,
+        change_pct_24h=change,
+        market_cap_usd=cap,
+    )
+
+
+def _global_snapshot() -> object:
+    from zeenova_bot.coinpaprika import GlobalSnapshot
+
+    return GlobalSnapshot(
+        market_cap_usd=3_500_000_000_000.0,
+        volume_24h_usd=120_000_000_000.0,
+        bitcoin_dominance_pct=53.4,
+        cryptocurrencies_number=12345,
+        market_cap_change_24h_pct=-1.2,
+    )
+
+
+def _cmd_update_context(
+    *,
+    paprika: object | None = None,
+) -> tuple[MagicMock, MagicMock]:
+    msg = MagicMock()
+    msg.reply_text = AsyncMock()
+    update = MagicMock()
+    update.effective_message = msg
+    update.effective_chat = MagicMock()
+    context = MagicMock()
+    context.bot_data = {"paprika": paprika, "settings": _settings()}
+    return update, context
+
+
+@pytest.mark.asyncio
+async def test_cmd_market_renders_global_snapshot() -> None:
+    """``/market`` shows total mcap, BTC dominance, and active coin count."""
+    from zeenova_bot.handlers import cmd_market
+
+    paprika = MagicMock()
+    paprika.fetch_global = AsyncMock(return_value=_global_snapshot())
+    update, context = _cmd_update_context(paprika=paprika)
+    await cmd_market(update, context)
+    body = _last_reply(update.effective_message)
+    assert "Global market" in body
+    assert "Total marketcap" in body
+    # 3.5 trillion -> $3.50T
+    assert "$3.50T" in body
+    assert "53.40%" in body  # BTC dominance
+    assert "12,345" in body  # active coins
+    # Negative 24h change is displayed without a leading +.
+    assert "-1.20%" in body
+
+
+@pytest.mark.asyncio
+async def test_cmd_market_handles_paprika_failure() -> None:
+    """If CoinPaprika is unreachable, /market replies with a friendly error."""
+    from zeenova_bot.handlers import cmd_market
+
+    paprika = MagicMock()
+    paprika.fetch_global = AsyncMock(return_value=None)
+    update, context = _cmd_update_context(paprika=paprika)
+    await cmd_market(update, context)
+    body = _last_reply(update.effective_message)
+    assert "Couldn't reach" in body
+
+
+@pytest.mark.asyncio
+async def test_cmd_top_renders_top_5_gainers_and_losers() -> None:
+    """``/top`` returns 5 gainers + 5 losers ordered correctly."""
+    from zeenova_bot.handlers import cmd_top
+
+    rows = [
+        _ticker("BTC", "Bitcoin", 1, 60000, 1.0),
+        _ticker("ETH", "Ethereum", 2, 3000, -2.0),
+        _ticker("SOL", "Solana", 3, 200, 12.0),
+        _ticker("DOGE", "Dogecoin", 4, 0.4, -8.0),
+        _ticker("XRP", "XRP", 5, 0.6, 9.0),
+        _ticker("ADA", "Cardano", 6, 1.0, -7.0),
+        _ticker("LINK", "Chainlink", 7, 14, 8.5),
+        _ticker("MATIC", "Polygon", 8, 0.6, -5.0),
+        _ticker("AVAX", "Avalanche", 9, 30, 7.5),
+        _ticker("DOT", "Polkadot", 10, 7, -3.0),
+        _ticker("TON", "Toncoin", 11, 5, 6.0),
+    ]
+    paprika = MagicMock()
+    paprika.fetch_top_tickers = AsyncMock(return_value=rows)
+    update, context = _cmd_update_context(paprika=paprika)
+    await cmd_top(update, context)
+    body = _last_reply(update.effective_message)
+    assert "Top movers" in body
+    # Top 5 gainers from the list (12, 9, 8.5, 7.5, 6.0).
+    for sym in ("SOL", "XRP", "LINK", "AVAX", "TON"):
+        assert sym in body
+    # Top 5 losers (-8, -7, -5, -3, -2).
+    for sym in ("DOGE", "ADA", "MATIC", "DOT", "ETH"):
+        assert sym in body
+    # Gainers section should appear before losers.
+    assert body.index("Gainers") < body.index("Losers")
+
+
+@pytest.mark.asyncio
+async def test_cmd_top_handles_empty_response() -> None:
+    """An empty /tickers response surfaces as a friendly error, not a crash."""
+    from zeenova_bot.handlers import cmd_top
+
+    paprika = MagicMock()
+    paprika.fetch_top_tickers = AsyncMock(return_value=[])
+    update, context = _cmd_update_context(paprika=paprika)
+    await cmd_top(update, context)
+    body = _last_reply(update.effective_message)
+    assert "Couldn't reach" in body
+
+
+def test_parse_global_handles_missing_fields() -> None:
+    """``_parse_global`` survives a partial /global payload."""
+    from zeenova_bot.coinpaprika import _parse_global
+
+    snap = _parse_global({
+        "market_cap_usd": 1234.5,
+        # Missing volume / dominance / count / change.
+    })
+    assert snap is not None
+    assert snap.market_cap_usd == 1234.5
+    assert snap.volume_24h_usd is None
+    assert snap.bitcoin_dominance_pct is None
+    assert snap.cryptocurrencies_number is None
+    assert snap.market_cap_change_24h_pct is None
+
+
+def test_parse_global_rejects_garbage() -> None:
+    from zeenova_bot.coinpaprika import _parse_global
+
+    assert _parse_global(None) is None
+    assert _parse_global("not a dict") is None
+
+
+def test_parse_ticker_pulls_relevant_fields() -> None:
+    from zeenova_bot.coinpaprika import _parse_ticker
+
+    row = {
+        "id": "btc-bitcoin",
+        "name": "Bitcoin",
+        "symbol": "btc",
+        "rank": 1,
+        "quotes": {
+            "USD": {
+                "price": 60000.0,
+                "percent_change_24h": 2.5,
+                "market_cap": 1.2e12,
+            }
+        },
+    }
+    t = _parse_ticker(row)
+    assert t is not None
+    assert t.symbol == "BTC"
+    assert t.name == "Bitcoin"
+    assert t.rank == 1
+    assert t.price_usd == 60000.0
+    assert t.change_pct_24h == 2.5
+    assert t.market_cap_usd == 1.2e12
+
+
+def test_parse_ticker_skips_invalid_rows() -> None:
+    """Rows without a usable USD quote / change / rank are dropped."""
+    from zeenova_bot.coinpaprika import _parse_ticker
+
+    # Missing rank.
+    assert _parse_ticker({"symbol": "BTC", "name": "Bitcoin"}) is None
+    # Missing USD quote.
+    assert (
+        _parse_ticker(
+            {"symbol": "BTC", "name": "Bitcoin", "rank": 1, "quotes": {}}
+        )
+        is None
+    )
+    # No price.
+    assert (
+        _parse_ticker(
+            {
+                "symbol": "BTC",
+                "name": "Bitcoin",
+                "rank": 1,
+                "quotes": {"USD": {"price": 0, "percent_change_24h": 1.0}},
+            }
+        )
+        is None
+    )

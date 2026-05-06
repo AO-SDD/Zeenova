@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -44,6 +45,29 @@ BASE_URL = "https://api.coinpaprika.com/v1"
 _COOLDOWN_S: float = 60.0
 
 
+@dataclass(slots=True)
+class GlobalSnapshot:
+    """Aggregate market stats from CoinPaprika's ``/global`` endpoint."""
+
+    market_cap_usd: float | None
+    volume_24h_usd: float | None
+    bitcoin_dominance_pct: float | None
+    cryptocurrencies_number: int | None
+    market_cap_change_24h_pct: float | None
+
+
+@dataclass(slots=True)
+class TickerSnapshot:
+    """Compact view of a CoinPaprika ``/tickers`` row used by ``/top``."""
+
+    symbol: str
+    name: str
+    rank: int
+    price_usd: float
+    change_pct_24h: float
+    market_cap_usd: float | None
+
+
 class CoinPaprikaClient:
     """Free marketcap source backed by CoinPaprika's public API."""
 
@@ -53,6 +77,8 @@ class CoinPaprikaClient:
         cache_ttl_s: float = 3600,
         coins_ttl_s: float = 6 * 3600,
         snapshot_ttl_s: float = 60.0,
+        global_ttl_s: float = 60.0,
+        top_tickers_ttl_s: float = 60.0,
     ) -> None:
         self._client = httpx.AsyncClient(base_url=BASE_URL, timeout=timeout)
         self._cap_cache: TTLCache[str, float | None] = TTLCache(
@@ -63,6 +89,18 @@ class CoinPaprikaClient:
         # CoinPaprika's monthly limit even with chatty channels.
         self._snapshot_cache: TTLCache[str, PriceSnapshot | None] = TTLCache(
             maxsize=2048, ttl=snapshot_ttl_s
+        )
+        # /global is one row of aggregate stats — cache by a fixed key.
+        # 60s matches the snapshot cache: short enough to stay live, long
+        # enough that bursty /market traffic doesn't hammer the API.
+        self._global_cache: TTLCache[str, GlobalSnapshot | None] = TTLCache(
+            maxsize=1, ttl=global_ttl_s
+        )
+        # /tickers (the top-N list used by /top) is large (~150 KB for
+        # the first 100 rows). Cache by ``limit`` so repeated /top
+        # commands within the TTL share a single API call.
+        self._top_cache: TTLCache[int, list[TickerSnapshot]] = TTLCache(
+            maxsize=8, ttl=top_tickers_ttl_s
         )
         # symbol (uppercase) -> coinpaprika coin id (e.g. "btc-bitcoin")
         self._id_map: dict[str, str] = {}
@@ -197,6 +235,57 @@ class CoinPaprikaClient:
         self._snapshot_cache[sym] = snap
         return snap
 
+    async def fetch_global(self) -> GlobalSnapshot | None:
+        """Aggregate market stats from CoinPaprika's ``/global`` endpoint.
+
+        Returns ``None`` when the API is unreachable or rate-limiting us.
+        Cached for ``global_ttl_s`` (default 60s) so a flood of
+        ``/market`` invocations only costs one request per minute.
+        """
+        cached = self._global_cache.get("_", _MISSING)
+        if cached is not _MISSING:
+            return cached  # type: ignore[return-value]
+        if time.time() < self._cooldown_until:
+            return None
+        try:
+            row = await self._get("/global")
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("CoinPaprika /global failed: %s", exc)
+            return None
+        snap = _parse_global(row)
+        self._global_cache["_"] = snap
+        return snap
+
+    async def fetch_top_tickers(self, limit: int = 100) -> list[TickerSnapshot]:
+        """Top ``limit`` coins by marketcap, ordered as the API returns.
+
+        Used by ``/top`` to surface the day's biggest movers. The
+        endpoint is paged with ``limit`` (max 5000); we keep ``limit``
+        modest to bound bandwidth and rely on the cache to amortise
+        repeated calls. Returns ``[]`` when the API is unreachable so
+        callers can degrade gracefully.
+        """
+        # Clamp to CoinPaprika's documented bounds — anything else gets
+        # 400'd by the API.
+        limit = max(1, min(limit, 5000))
+        cached = self._top_cache.get(limit)
+        if cached is not None:
+            return cached
+        if time.time() < self._cooldown_until:
+            return []
+        try:
+            rows = await self._get(f"/tickers?limit={limit}")
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("CoinPaprika /tickers?limit=%d failed: %s", limit, exc)
+            return []
+        out: list[TickerSnapshot] = []
+        for row in rows or []:
+            t = _parse_ticker(row)
+            if t is not None:
+                out.append(t)
+        self._top_cache[limit] = out
+        return out
+
     async def _safe_get(self, path: str, sym: str) -> Any:
         """Like :meth:`_get` but swallows exceptions into ``None``.
 
@@ -249,6 +338,60 @@ def _parse_snapshot(symbol: str, row: Any) -> PriceSnapshot | None:
         market_cap_usd=_to_positive_float(usd.get("market_cap")),
         volume_quote_24h=_to_positive_float(usd.get("volume_24h")),
         rank=rank,
+    )
+
+
+def _parse_global(row: Any) -> GlobalSnapshot | None:
+    """Build a :class:`GlobalSnapshot` from a /global response row.
+
+    Returns ``None`` only when the response is structurally unusable
+    (not a dict). Individual fields fall back to ``None`` on parse
+    errors so the renderer can still show whatever did come through.
+    """
+    if not isinstance(row, dict):
+        return None
+    n_raw = row.get("cryptocurrencies_number")
+    n = int(n_raw) if isinstance(n_raw, int) and n_raw > 0 else None
+    return GlobalSnapshot(
+        market_cap_usd=_to_positive_float(row.get("market_cap_usd")),
+        volume_24h_usd=_to_positive_float(row.get("volume_24h_usd")),
+        bitcoin_dominance_pct=_to_float(row.get("bitcoin_dominance_percentage")),
+        cryptocurrencies_number=n,
+        market_cap_change_24h_pct=_to_float(row.get("market_cap_change_24h")),
+    )
+
+
+def _parse_ticker(row: Any) -> TickerSnapshot | None:
+    """Compact parse of one CoinPaprika /tickers row for the ``/top`` list.
+
+    Skips rows missing a positive rank, USD quote, or 24h change — those
+    are typically stale or de-listed coins that would just clutter the
+    movers list.
+    """
+    if not isinstance(row, dict):
+        return None
+    rank_raw = row.get("rank")
+    if not isinstance(rank_raw, int) or rank_raw <= 0:
+        return None
+    sym = (row.get("symbol") or "").strip().upper()
+    name = (row.get("name") or "").strip()
+    if not sym or not name:
+        return None
+    quotes = row.get("quotes")
+    usd = quotes.get("USD") if isinstance(quotes, dict) else None
+    if not isinstance(usd, dict):
+        return None
+    price = _to_positive_float(usd.get("price"))
+    change = _to_float(usd.get("percent_change_24h"))
+    if price is None or change is None:
+        return None
+    return TickerSnapshot(
+        symbol=sym,
+        name=name,
+        rank=rank_raw,
+        price_usd=price,
+        change_pct_24h=change,
+        market_cap_usd=_to_positive_float(usd.get("market_cap")),
     )
 
 

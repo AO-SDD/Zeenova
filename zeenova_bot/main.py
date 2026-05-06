@@ -53,6 +53,9 @@ def main() -> None:
     fx = FxClient()
 
     app = build_application(settings, service, fx)
+    # /top and /market need the raw CoinPaprika client (the rest of the
+    # bot only sees the marketcap aggregator).
+    app.bot_data["paprika"] = paprika
 
     async def _post_init(_: Application) -> None:  # type: ignore[type-arg]
         # Warm Binance + MEXC pair caches so the first user click doesn't
