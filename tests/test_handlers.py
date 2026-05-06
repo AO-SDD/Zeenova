@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from telegram.constants import ChatType
 
-from zeenova_bot.handlers import _handle_calc, convert_with_fallback
+from zeenova_bot.config import Settings
+from zeenova_bot.handlers import (
+    _handle_calc,
+    _help_keyboard,
+    _help_text,
+    convert_with_fallback,
+)
 
 
 def _fx_returning(rates: dict[str, dict[str, float]]) -> AsyncMock:
@@ -343,3 +349,64 @@ async def test_invalid_syntax_silent_in_group() -> None:
     assert await _handle_calc(update, context, "5/") is True
     reply = _last_reply(update.effective_message)
     assert "Math error" in reply
+
+
+# ---------------------------------------------------------------------------
+# /start and /help message body + inline keyboard.
+# ---------------------------------------------------------------------------
+
+
+def _settings() -> Settings:
+    return Settings(  # type: ignore[call-arg]
+        telegram_bot_token="x",
+        brand_name="Zeenova",
+        channel_name="Zeen Channel",
+        group_name="Zeen Chat",
+        telegram_channel_url="https://t.me/ox_zeen",
+        telegram_group_url="https://t.me/blockzeen",
+    )
+
+
+def test_help_text_drops_data_sources_section() -> None:
+    """The /start body no longer advertises raw data sources."""
+    body = _help_text(_settings())
+    assert "Data sources" not in body
+    assert "Binance" not in body
+    assert "CoinPaprika" not in body
+    assert "fawazahmed0" not in body
+
+
+def test_help_text_advertises_core_features() -> None:
+    """The new copy keeps mention of the headline features."""
+    body = _help_text(_settings())
+    # Top-level pitch.
+    assert "Zeenova" in body
+    # Core feature blocks are still discoverable.
+    assert "Live prices" in body
+    assert "Calculator" in body
+    # Percent + group-friendly copy land on the page so users know about
+    # the new behaviours.
+    assert "100+10%" in body
+    assert "Group-friendly" in body
+
+
+def test_help_keyboard_has_add_me_and_links() -> None:
+    """Keyboard exposes the deep-link to add the bot to a group."""
+    kb = _help_keyboard("zeenovabot", _settings())
+    assert kb is not None
+    rows = kb.inline_keyboard
+    # First row: single "Add me" button with the startgroup deep-link.
+    assert len(rows[0]) == 1
+    add_btn = rows[0][0]
+    assert "Add me" in add_btn.text
+    assert add_btn.url == "https://t.me/zeenovabot?startgroup=true"
+    # Second row: channel + group shortcuts.
+    assert len(rows[1]) == 2
+    assert rows[1][0].url == "https://t.me/ox_zeen"
+    assert rows[1][1].url == "https://t.me/blockzeen"
+
+
+def test_help_keyboard_returns_none_without_username() -> None:
+    """Before PTB has fetched its identity we must not render a broken URL."""
+    assert _help_keyboard(None, _settings()) is None
+    assert _help_keyboard("", _settings()) is None

@@ -78,28 +78,70 @@ _KNOWN_USD_RATES: Final[dict[str, float]] = {
 def _help_text(settings: Settings) -> str:
     """Build the /start and /help message body from runtime settings."""
     return (
-        f"<b>📈 {escape(settings.brand_name)}</b>\n"
-        "<i>Real-time crypto prices, candlestick charts, "
-        "and a built-in calculator with currency conversion.</i>\n\n"
-        "<b>Prices &amp; charts</b>\n"
-        "• Send any coin symbol — e.g. <code>BTC</code>, <code>$ETH</code>, <code>MEGA</code>\n"
-        "• Or use <code>/p SYMBOL</code> for an explicit lookup\n"
-        "• Tap <b>15M</b> · <b>1H</b> · <b>4H</b> · <b>1D</b> to switch timeframe\n\n"
-        "<b>Calculator &amp; conversion</b>\n"
-        "• Math — <code>2+2/4</code>, <code>(1+2)*3</code>\n"
-        "• Price a currency in USD — <code>300 btc</code> (BTC → USD), "
-        "<code>2+2/4 eth</code>\n"
-        "• Between any two currencies — <code>1 usd egp</code>, "
+        f"<b>📈 {escape(settings.brand_name)} — your all-in-one crypto desk</b>\n"
+        "<i>Real-time prices, candlestick charts, and a smart calculator. "
+        "Built for traders, analysts, and crypto communities.</i>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "<b>💹 Live prices &amp; charts</b>\n"
+        "• Send any coin symbol to get its price card and 1D chart — "
+        "tap <b>15M</b> · <b>1H</b> · <b>4H</b> · <b>1D</b> to switch timeframe.\n"
+        "  Examples: <code>BTC</code> · <code>$ETH</code> · "
+        "<code>MEGA</code> · <code>OCT</code>\n"
+        "• Use <code>/p SYMBOL</code> for an explicit lookup.\n"
+        "• Coverage includes every major exchange listing <b>plus</b> "
+        "thin-listed coins tracked by aggregators (so coins like OCT or "
+        "OPG still resolve).\n\n"
+        "<b>🧮 Calculator &amp; conversion</b>\n"
+        "• Plain math with full operator precedence — "
+        "<code>2+2/4</code>, <code>(1+2)*3</code>, <code>2^10</code>, "
+        "<code>1k+1</code>\n"
+        "• Calculator-style percent — <code>100+10%</code> → 110, "
+        "<code>1000-0.1%</code> → 999 (great for fees)\n"
+        "• Price any currency in USD — <code>300 btc</code>, "
+        "<code>2+2 eth</code>, <code>20 mnt</code>\n"
+        "• Convert between any two currencies — <code>1 usd egp</code>, "
         "<code>5000 egp btc</code>, <code>1 eth btc</code>\n"
         "• Telegram Stars — <code>300 star</code>, "
         "<code>3 usd star</code>, <code>3 usdt star</code>\n\n"
-        "<b>Data sources</b>\n"
-        "Binance · Bybit · MEXC · CoinPaprika · fawazahmed0/currency-api\n\n"
-        f'📣 <a href="{escape(settings.telegram_channel_url, quote=True)}">'
-        f"<b>{escape(settings.channel_name)}</b></a>"
-        "   |   "
-        f'💬 <a href="{escape(settings.telegram_group_url, quote=True)}">'
-        f"<b>{escape(settings.group_name)}</b></a>"
+        "<b>🌍 Worldwide currencies</b>\n"
+        "Every major fiat (USD, EUR, EGP, GBP, AED, …) plus thousands of "
+        "cryptocurrencies and stablecoins.\n\n"
+        "<b>⚡ Group-friendly</b>\n"
+        "Add me to your channel or chat. I stay quiet on casual numbers "
+        "(<code>50%</code>, <code>1k</code>) and only reply when you "
+        "actually want a quote or a calc."
+    )
+
+
+def _help_keyboard(
+    bot_username: str | None, settings: Settings
+) -> InlineKeyboardMarkup | None:
+    """Build the inline keyboard shown under ``/start`` and ``/help``.
+
+    Top row: a single "Add me to your chat" button that opens
+    Telegram's group-picker via the ``?startgroup=true`` deep-link.
+    Bottom row: shortcuts to the brand's announcement channel and
+    community group. Returns ``None`` when the bot username is
+    unavailable (e.g. during very early startup) so we can degrade
+    gracefully to a text-only message.
+    """
+    if not bot_username:
+        return None
+    add_url = f"https://t.me/{bot_username}?startgroup=true"
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("➕ Add me to your chat", url=add_url)],
+            [
+                InlineKeyboardButton(
+                    f"📣 {settings.channel_name}",
+                    url=settings.telegram_channel_url,
+                ),
+                InlineKeyboardButton(
+                    f"💬 {settings.group_name}",
+                    url=settings.telegram_group_url,
+                ),
+            ],
+        ]
     )
 
 
@@ -137,6 +179,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         text=_help_text(settings),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
+        reply_markup=_help_keyboard(context.bot.username, settings),
     )
 
 
