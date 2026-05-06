@@ -584,6 +584,7 @@ def _global_snapshot() -> object:
 def _cmd_update_context(
     *,
     paprika: object | None = None,
+    fear_greed: object | None = None,
 ) -> tuple[MagicMock, MagicMock]:
     msg = MagicMock()
     msg.reply_text = AsyncMock()
@@ -591,7 +592,11 @@ def _cmd_update_context(
     update.effective_message = msg
     update.effective_chat = MagicMock()
     context = MagicMock()
-    context.bot_data = {"paprika": paprika, "settings": _settings()}
+    context.bot_data = {
+        "paprika": paprika,
+        "fear_greed": fear_greed,
+        "settings": _settings(),
+    }
     return update, context
 
 
@@ -749,3 +754,41 @@ def test_parse_ticker_skips_invalid_rows() -> None:
         )
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_cmd_market_includes_fear_greed_when_available() -> None:
+    """``/market`` adds the Fear & Greed line when the client returns data."""
+    from zeenova_bot.fear_greed import FearGreed
+    from zeenova_bot.handlers import cmd_market
+
+    paprika = MagicMock()
+    paprika.fetch_global = AsyncMock(return_value=_global_snapshot())
+    fng = MagicMock()
+    fng.fetch_current = AsyncMock(
+        return_value=FearGreed(value=72, classification="Greed")
+    )
+    update, context = _cmd_update_context(paprika=paprika, fear_greed=fng)
+    await cmd_market(update, context)
+    body = _last_reply(update.effective_message)
+    assert "Fear &amp; Greed" in body  # HTML-escaped &
+    assert "72/100" in body
+    assert "Greed" in body
+
+
+@pytest.mark.asyncio
+async def test_cmd_market_omits_fear_greed_on_failure() -> None:
+    """If the Fear & Greed fetch fails, /market still renders global stats."""
+    from zeenova_bot.handlers import cmd_market
+
+    paprika = MagicMock()
+    paprika.fetch_global = AsyncMock(return_value=_global_snapshot())
+    fng = MagicMock()
+    fng.fetch_current = AsyncMock(side_effect=RuntimeError("boom"))
+    update, context = _cmd_update_context(paprika=paprika, fear_greed=fng)
+    await cmd_market(update, context)
+    body = _last_reply(update.effective_message)
+    # Global snapshot still rendered.
+    assert "$3.50T" in body
+    # No Fear & Greed line.
+    assert "Fear &amp; Greed" not in body

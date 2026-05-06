@@ -34,8 +34,9 @@ from .calc import CalcError, safe_eval
 from .calc import parse_input as parse_calc_input
 from .card import render_price_card
 from .chart import render_candles
-from .coinpaprika import GlobalSnapshot, TickerSnapshot
+from .coinpaprika import CoinPaprikaClient, GlobalSnapshot, TickerSnapshot
 from .config import Settings
+from .fear_greed import FearGreed, FearGreedClient
 from .fx import FxClient
 from .services import (
     OFF_EXCHANGE_SOURCE,
@@ -264,7 +265,29 @@ def _fmt_unit_price(v: float) -> str:
     return f"${v:.8f}".rstrip("0").rstrip(".") or "$0"
 
 
-def _render_market(snap: GlobalSnapshot, brand_name: str) -> str:
+def _fear_greed_emoji(value: int) -> str:
+    """Pick an emoji for a 0..100 Fear & Greed reading.
+
+    Mirrors alternative.me's own colour buckets so the emoji and
+    classification stay in sync.
+    """
+    if value <= 24:
+        return "😱"  # Extreme Fear
+    if value <= 49:
+        return "😨"  # Fear
+    if value == 50:
+        return "😐"  # Neutral
+    if value <= 74:
+        return "🙂"  # Greed
+    return "🤑"  # Extreme Greed
+
+
+def _render_market(
+    snap: GlobalSnapshot,
+    brand_name: str,
+    *,
+    fear_greed: FearGreed | None = None,
+) -> str:
     """HTML body for ``/market``."""
     lines = [
         f"<b>🌐 {escape(brand_name)} — Global market</b>",
@@ -280,6 +303,12 @@ def _render_market(snap: GlobalSnapshot, brand_name: str) -> str:
     if snap.cryptocurrencies_number is not None:
         lines.append(
             f"🪙 <b>Active coins:</b> {snap.cryptocurrencies_number:,}"
+        )
+    if fear_greed is not None:
+        emoji = _fear_greed_emoji(fear_greed.value)
+        lines.append(
+            f"{emoji} <b>Fear &amp; Greed:</b> {fear_greed.value}/100 "
+            f"<i>({escape(fear_greed.classification)})</i>"
         )
     return "\n".join(lines)
 
@@ -317,7 +346,10 @@ async def cmd_market(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     msg = update.effective_message
     if msg is None:
         return
-    paprika = context.bot_data.get("paprika")
+    paprika: CoinPaprikaClient | None = context.bot_data.get("paprika")
+    fear_greed_client: FearGreedClient | None = context.bot_data.get(
+        "fear_greed"
+    )
     settings: Settings = context.bot_data["settings"]
     if paprika is None:
         await msg.reply_text(
@@ -325,11 +357,25 @@ async def cmd_market(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             parse_mode=ParseMode.HTML,
         )
         return
-    try:
-        snap = await paprika.fetch_global()
-    except Exception:  # noqa: BLE001
-        logger.exception("/market: fetch_global failed")
-        snap = None
+    paprika_client = paprika  # closures below capture a non-Optional alias
+
+    async def _safe_global() -> GlobalSnapshot | None:
+        try:
+            return await paprika_client.fetch_global()
+        except Exception:  # noqa: BLE001
+            logger.exception("/market: fetch_global failed")
+            return None
+
+    async def _safe_fng() -> FearGreed | None:
+        if fear_greed_client is None:
+            return None
+        try:
+            return await fear_greed_client.fetch_current()
+        except Exception:  # noqa: BLE001
+            logger.exception("/market: fetch_current (fear & greed) failed")
+            return None
+
+    snap, fng = await asyncio.gather(_safe_global(), _safe_fng())
     if snap is None:
         await msg.reply_text(
             "Couldn't reach the market data feed. Try again in a minute.",
@@ -337,7 +383,9 @@ async def cmd_market(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         return
     await msg.reply_text(
-        _render_market(snap, brand_name=settings.brand_name),
+        _render_market(
+            snap, brand_name=settings.brand_name, fear_greed=fng
+        ),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
@@ -348,7 +396,7 @@ async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     if msg is None:
         return
-    paprika = context.bot_data.get("paprika")
+    paprika: CoinPaprikaClient | None = context.bot_data.get("paprika")
     if paprika is None:
         await msg.reply_text(
             "Top movers data is unavailable right now.",

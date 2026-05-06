@@ -13,6 +13,7 @@ from .bybit import BybitClient
 from .coingecko import MarketcapClient as CoinGeckoMarketcap
 from .coinpaprika import CoinPaprikaClient
 from .config import load_settings
+from .fear_greed import FearGreedClient
 from .fx import FxClient
 from .handlers import build_application
 from .marketcap import MarketcapAggregator
@@ -51,11 +52,14 @@ def main() -> None:
         off_exchange=paprika,
     )
     fx = FxClient()
+    fear_greed = FearGreedClient()
 
     app = build_application(settings, service, fx)
     # /top and /market need the raw CoinPaprika client (the rest of the
     # bot only sees the marketcap aggregator).
     app.bot_data["paprika"] = paprika
+    # /market also overlays the Fear & Greed Index from alternative.me.
+    app.bot_data["fear_greed"] = fear_greed
 
     async def _post_init(_: Application) -> None:  # type: ignore[type-arg]
         # Warm Binance + MEXC pair caches so the first user click doesn't
@@ -77,6 +81,7 @@ def main() -> None:
     async def _post_shutdown(_: Application) -> None:  # type: ignore[type-arg]
         await service.aclose()
         await fx.aclose()
+        await fear_greed.aclose()
 
     # PTB v21 exposes ``post_init`` / ``post_shutdown`` as configurable hooks.
     app.post_init = _post_init
