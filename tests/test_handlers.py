@@ -503,8 +503,15 @@ def _inline_update_context(
     else:
         service.market = AsyncMock(return_value=market_data)
 
+    fx = MagicMock()
+    fx.supports = AsyncMock(return_value=False)
+
     context = MagicMock()
-    context.bot_data = {"service": service, "settings": _settings()}
+    context.bot_data = {
+        "service": service,
+        "settings": _settings(),
+        "fx": fx,
+    }
     return update, context
 
 
@@ -592,6 +599,47 @@ async def test_inline_query_unknown_symbol_returns_empty() -> None:
     await on_inline_query(update, context)
     args, _ = update.inline_query.answer.call_args
     assert args[0] == []
+
+
+@pytest.mark.asyncio
+async def test_inline_query_suppresses_off_exchange_fiat_clash() -> None:
+    """``@bot egp`` must not surface a $200k-cap junk crypto card.
+
+    EGP resolves on CoinPaprika to a scam token, but the same ticker
+    is the Egyptian Pound on the FX feed. The price-card flow should
+    treat that as unresolved (the calc path still returns the real
+    fiat rate via FX).
+    """
+    from zeenova_bot.handlers import on_inline_query
+    from zeenova_bot.services import OFF_EXCHANGE_SOURCE, CoinRef
+
+    junk = CoinRef(symbol="EGP", pair="EGP/USD", source=OFF_EXCHANGE_SOURCE)
+    update, context = _inline_update_context("egp", resolve_ref=junk)
+    # FX knows EGP — so the off-exchange clash should be suppressed.
+    context.bot_data["fx"].supports = AsyncMock(return_value=True)
+    await on_inline_query(update, context)
+    args, _ = update.inline_query.answer.call_args
+    assert args[0] == []
+    # And we must not have fetched the junk token's market data.
+    context.bot_data["service"].market.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_inline_query_keeps_thin_listed_off_exchange_coin() -> None:
+    """``@bot oct`` should still surface OCT (off-exchange but FX has no OCT)."""
+    from zeenova_bot.handlers import on_inline_query
+    from zeenova_bot.services import OFF_EXCHANGE_SOURCE, CoinRef
+
+    ref = CoinRef(symbol="OCT", pair="OCT/USD", source=OFF_EXCHANGE_SOURCE)
+    md = _make_market_data(symbol="OCT", price=0.054)
+    update, context = _inline_update_context(
+        "oct", resolve_ref=ref, market_data=md
+    )
+    # FX has no OCT — so the off-exchange match must be kept.
+    context.bot_data["fx"].supports = AsyncMock(return_value=False)
+    await on_inline_query(update, context)
+    args, _ = update.inline_query.answer.call_args
+    assert len(args[0]) == 1
 
 
 @pytest.mark.asyncio
