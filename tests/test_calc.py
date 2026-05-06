@@ -93,11 +93,14 @@ class TestSafeEval:
             safe_eval("1mb")
 
     def test_syntax_error_not_duplicated(self) -> None:
-        # Regression: ``5%`` used to surface as
+        # Regression: when ``5%`` *did* fail (before percent support
+        # was added) the error surfaced as
         # ``"invalid syntax: invalid syntax"`` because we prefixed the
-        # already-prefixed ``SyntaxError.msg``.
+        # already-prefixed ``SyntaxError.msg``. ``5%`` now evaluates to
+        # 0.05 instead, but other genuine syntax errors must still come
+        # through clean.
         with pytest.raises(CalcError) as exc_info:
-            safe_eval("5%")
+            safe_eval("3++")
         assert "invalid syntax: invalid syntax" not in str(exc_info.value)
 
 
@@ -145,3 +148,44 @@ class TestParseInput:
         assert parse_input("1k+1 ETH") == ("1k+1", "ETH", None)
         assert parse_input("2.5m USD EGP") == ("2.5m", "USD", "EGP")
         assert parse_input("1k egp") == ("1k", "egp", None)
+
+
+class TestPercent:
+    """Calculator-style percent semantics."""
+
+    @pytest.mark.parametrize(
+        ("expr", "expected"),
+        [
+            # Standalone percent → fraction.
+            ("5%", 0.05),
+            ("100%", 1.0),
+            ("0.1%", 0.001),
+            # +/- with a base on the left → percent of the base.
+            ("100+10%", 110.0),
+            ("100-10%", 90.0),
+            ("200+25%", 250.0),
+            ("200-25%", 150.0),
+            ("1000-0.1%", 999.0),  # tiny fee
+            # *,/ → direct scale by fraction.
+            ("100*10%", 10.0),
+            ("200*15%", 30.0),
+            ("100/10%", 1000.0),
+            # Both sides percent → plain arithmetic on the fractions.
+            ("50%+50%", 1.0),
+            ("5%+5%", 0.1),
+            # Chained percent ops cascade left-to-right.
+            ("100+10%+5%", 115.5),  # 110 then +5% of 110
+            ("100-10%-5%", 85.5),
+            # k/m/b/t suffixes inside percent literals.
+            ("1k+10%", 1100.0),
+            ("100+1k%", 1100.0),  # 1000% of 100 = 1000 added
+        ],
+    )
+    def test_percent(self, expr: str, expected: float) -> None:
+        assert safe_eval(expr) == pytest.approx(expected)
+
+    def test_modulo_still_works_when_followed_by_digit(self) -> None:
+        # ``10%3`` is unambiguously the modulo operator (no whitespace, a
+        # digit immediately after ``%``) so the percent rewrite skips it.
+        assert safe_eval("10%3") == pytest.approx(1.0)
+        assert safe_eval("10 % 3") == pytest.approx(1.0)

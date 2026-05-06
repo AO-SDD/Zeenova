@@ -47,12 +47,31 @@ _SUFFIX_MULTIPLIERS: Final[dict[str, int]] = {
 }
 _SUFFIX_RE = re.compile(r"(\d+(?:\.\d+)?)([kmbtKMBT])(?![A-Za-z])")
 
+# Marker used while pre-processing percent literals. ``5%`` is rewritten
+# to ``__pct__(5)`` so the AST evaluator can recognise it as a percent
+# (and apply calculator-style semantics like ``100 + 10%`` → 110)
+# without confusing it for a literal user-typed division. The exact
+# spelling doesn't matter as long as it can't appear in a real input —
+# the parse_input regex only allows digits / arithmetic punctuation, so
+# users cannot type ``__pct__`` directly.
+_PERCENT_MARKER: Final[str] = "__pct__"
+
+# Matches ``<num>`` or ``<num><kmbt-suffix>`` immediately followed by ``%``
+# (and not by another digit, so ``10%3`` stays as a modulo). The optional
+# magnitude suffix is captured so it survives the rewrite and gets
+# expanded later by :func:`_expand_suffixes`.
+_PERCENT_RE = re.compile(r"(\d+(?:\.\d+)?[kmbtKMBT]?)%(?!\d)")
+
 
 def _expand_suffixes(expr: str) -> str:
     return _SUFFIX_RE.sub(
         lambda m: f"({m.group(1)}*{_SUFFIX_MULTIPLIERS[m.group(2).lower()]})",
         expr,
     )
+
+
+def _expand_percents(expr: str) -> str:
+    return _PERCENT_RE.sub(rf"{_PERCENT_MARKER}(\1)", expr)
 
 
 class CalcError(ValueError):
@@ -74,6 +93,12 @@ def safe_eval(expr: str) -> float:
     # almost always mean ``2**10`` rather than the bitwise XOR Python gives
     # them by default.
     expr = expr.replace("^", "**")
+    # Rewrite ``<num>%`` literals into a marker call (``__pct__(<num>)``)
+    # *before* suffix expansion, so the optional ``k/m/b/t`` suffix is
+    # captured inside the marker and then expanded normally on the next
+    # pass. The AST evaluator special-cases the marker to provide
+    # calculator-style percent semantics (``100 + 10%`` → 110).
+    expr = _expand_percents(expr)
     # Then expand magnitude suffixes (``1k`` → ``(1*1000)``, ``2.5m`` →
     # ``(2.5*1000000)``) so the AST parser only has to deal with plain
     # numeric literals.
@@ -105,6 +130,29 @@ def _eval(node: ast.AST) -> float:
             return float(node.value)
         raise CalcError(f"unsupported constant: {node.value!r}")
     if isinstance(node, ast.BinOp):
+        # Calculator-style percent: when the right-hand side is a ``<num>%``
+        # marker, interpret +/- as additive percent and *,/ as direct scale.
+        # This matches Windows / iOS calculator behaviour:
+        #   100 + 10%  -> 110   (add 10% of 100)
+        #   100 - 10%  -> 90    (subtract 10% of 100)
+        #   100 * 10%  -> 10    (10% of 100)
+        #   100 / 10%  -> 1000  (divide by 0.10)
+        # When *both* sides are percent literals (``50% + 50%``) we fall
+        # through to plain arithmetic (``0.5 + 0.5 = 1.0``) instead, since
+        # there's no obvious "base" to apply the % to.
+        if _is_percent_marker(node.right) and not _is_percent_marker(node.left):
+            pct = _percent_value(node.right)
+            base = _eval(node.left)
+            if isinstance(node.op, ast.Add):
+                return base * (1.0 + pct)
+            if isinstance(node.op, ast.Sub):
+                return base * (1.0 - pct)
+            if isinstance(node.op, ast.Mult):
+                return base * pct
+            if isinstance(node.op, ast.Div):
+                return base / pct
+            # Fallthrough for ops where percent context doesn't apply
+            # (e.g. ``5 ** 10%``); evaluate the percent as its raw value.
         op = _BIN_OPS.get(type(node.op))
         if op is None:
             raise CalcError(f"unsupported binary op: {type(node.op).__name__}")
@@ -114,7 +162,26 @@ def _eval(node: ast.AST) -> float:
         if un is None:
             raise CalcError(f"unsupported unary op: {type(node.op).__name__}")
         return un(_eval(node.operand))
+    if _is_percent_marker(node):
+        # Standalone ``5%`` (no enclosing binary op) → 0.05.
+        return _percent_value(node)
     raise CalcError(f"unsupported expression node: {type(node).__name__}")
+
+
+def _is_percent_marker(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == _PERCENT_MARKER
+        and len(node.args) == 1
+        and not node.keywords
+    )
+
+
+def _percent_value(node: ast.AST) -> float:
+    """Return ``arg / 100`` for a percent-marker call. Caller must check."""
+    assert isinstance(node, ast.Call)  # guarded by _is_percent_marker
+    return _eval(node.args[0]) / 100.0
 
 
 # Matches an arithmetic expression optionally followed by 1 or 2 alphabetic
@@ -137,6 +204,29 @@ _CALC_RE = re.compile(
     """,
     re.VERBOSE,
 )
+
+# Tokens that make a free-text message *clearly* an arithmetic expression
+# rather than e.g. a number quoted in a sentence ("got 50% on the test").
+# Used by :func:`looks_like_calc` so handlers can stay silent on bare
+# numbers in group chats and only reply when the user actually meant to
+# do math. ``%`` counts as math because the bot supports it as a percent
+# operator.
+_CALC_OP_RE = re.compile(r"[+\-*/^%]")
+
+
+def looks_like_calc(expr: str) -> bool:
+    """Return True when ``expr`` contains an arithmetic operator.
+
+    A bare number followed by a currency (``300 btc``) is *not* a
+    calculator expression on its own — it's a price query. But once
+    there's a ``+``, ``-``, ``*``, ``/``, ``^``, or ``%`` in the body
+    the user is doing math and we should always reply (success or error).
+
+    Used by the message handler to decide whether to surface parse
+    errors. In group chats this prevents the bot from blurting
+    "invalid syntax" at every stray ``50%`` someone types.
+    """
+    return bool(_CALC_OP_RE.search(expr))
 
 
 def parse_input(text: str) -> tuple[str, str | None, str | None] | None:

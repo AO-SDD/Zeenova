@@ -156,12 +156,18 @@ class CoinPaprikaClient:
         return cap
 
     async def fetch_price_snapshot(self, symbol: str) -> PriceSnapshot | None:
-        """Live price + marketcap + rank for ``symbol``.
+        """Live price + marketcap + rank + today's high/low for ``symbol``.
 
-        Returns ``None`` when the symbol isn't in CoinPaprika's catalogue
-        or the API is rate-limited / unreachable. The caller (typically
-        :class:`CoinService`) decides whether to surface a "not found"
-        message or fall back further.
+        Calls ``/tickers/{id}`` (price, change, marketcap, volume, rank)
+        and ``/coins/{id}/ohlcv/today`` (today's high/low) in parallel
+        and merges the results. Returns ``None`` when the symbol isn't
+        in CoinPaprika's catalogue or the API is rate-limited /
+        unreachable.
+
+        Note: ``today``'s OHLC resets at UTC midnight, so the high/low
+        we report is "since 00:00 UTC" rather than a strict 24h-rolling
+        window. For the price card it's close enough and matches what
+        most aggregator UIs show.
         """
         sym = symbol.strip().upper()
         if not sym:
@@ -176,18 +182,51 @@ class CoinPaprikaClient:
         if not cid:
             self._snapshot_cache[sym] = None
             return None
-        try:
-            row = await self._get(f"/tickers/{cid}")
-        except (httpx.HTTPError, ValueError) as exc:
-            logger.debug("CoinPaprika ticker fetch failed for %s: %s", sym, exc)
-            return None
-        snap = _parse_snapshot(sym, row)
+        ticker_task = asyncio.create_task(self._safe_get(f"/tickers/{cid}", sym))
+        ohlcv_task = asyncio.create_task(
+            self._safe_get(f"/coins/{cid}/ohlcv/today", sym)
+        )
+        ticker_row, ohlcv_row = await asyncio.gather(ticker_task, ohlcv_task)
+        snap = _parse_snapshot(sym, ticker_row)
+        if snap is not None:
+            high, low = _parse_today_high_low(ohlcv_row)
+            if high is not None:
+                snap.high_24h = high
+            if low is not None:
+                snap.low_24h = low
         self._snapshot_cache[sym] = snap
         return snap
+
+    async def _safe_get(self, path: str, sym: str) -> Any:
+        """Like :meth:`_get` but swallows exceptions into ``None``.
+
+        Used by the snapshot fan-out so a transient OHLCV failure
+        doesn't mask the price we already have.
+        """
+        try:
+            return await self._get(path)
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.debug("CoinPaprika fetch %s failed for %s: %s", path, sym, exc)
+            return None
 
 
 # Sentinel so we can distinguish "cached as None" from "not in cache".
 _MISSING: object = object()
+
+
+def _parse_today_high_low(row: Any) -> tuple[float | None, float | None]:
+    """Pull today's high/low out of a /coins/{id}/ohlcv/today response.
+
+    The endpoint returns a single-element list with one OHLC bucket
+    covering ``[00:00 UTC, now)``. We accept anything that looks like a
+    list of dicts with positive numeric ``high`` / ``low`` keys.
+    """
+    if not isinstance(row, list) or not row:
+        return None, None
+    bucket = row[0]
+    if not isinstance(bucket, dict):
+        return None, None
+    return _to_positive_float(bucket.get("high")), _to_positive_float(bucket.get("low"))
 
 
 def _parse_snapshot(symbol: str, row: Any) -> PriceSnapshot | None:
