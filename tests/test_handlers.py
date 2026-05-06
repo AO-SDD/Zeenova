@@ -46,18 +46,18 @@ def _service_with(usd_rates: dict[str, float]) -> AsyncMock:
 
 
 @pytest.mark.asyncio
-async def test_direct_fx_path_used_when_available() -> None:
-    fx = _fx_returning({"usd": {"egp": 50.0}})
-    svc = _service_with({})
+async def test_fiat_to_fiat_via_usd_bridge() -> None:
+    """USD→EGP and any fiat↔fiat go through ``_to_usd_rate`` for both sides."""
+    # Mirror the real fawazahmed0 feed (each ``from`` ccy has its own table).
+    fx = _fx_returning({"usd": {"egp": 50.0}, "egp": {"usd": 1 / 50.0}})
+    svc = _service_with({})  # No crypto override.
     assert await convert_with_fallback(fx, svc, 5.0, "usd", "egp") == pytest.approx(250.0)
-    # Coin fallback is never consulted on the happy path.
-    svc.usd_rate.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_falls_back_to_coin_price_for_unknown_symbol() -> None:
     """``300 USD → OPG`` works even though FX has no OPG entry."""
-    fx = _fx_returning({"usd": {"egp": 50.0, "btc": 0.00002}})
+    fx = _fx_returning({"usd": {"egp": 50.0}, "egp": {"usd": 1 / 50.0}})
     svc = _service_with({"OPG": 0.5})  # 1 OPG = 0.5 USD
     converted = await convert_with_fallback(fx, svc, 300.0, "usd", "opg")
     assert converted == pytest.approx(600.0)  # 300 / 0.5
@@ -92,7 +92,7 @@ async def test_returns_none_when_neither_side_resolves() -> None:
 
 @pytest.mark.asyncio
 async def test_returns_none_when_to_side_unresolvable() -> None:
-    fx = _fx_returning({"usd": {"egp": 50.0}})
+    fx = _fx_returning({"usd": {"egp": 50.0}, "egp": {"usd": 1 / 50.0}})
     svc = _service_with({})  # No coin price for OPG.
     assert await convert_with_fallback(fx, svc, 100.0, "usd", "opg") is None
 
@@ -169,10 +169,88 @@ async def test_single_currency_suffix_treats_named_ccy_as_source() -> None:
 @pytest.mark.asyncio
 async def test_two_currencies_still_use_explicit_pair() -> None:
     """``5 egp btc`` — explicit pair must still be ccy1 → ccy2 unchanged."""
-    fx = _fx_returning({"egp": {"btc": 4e-7}})
-    svc = _service_with({})
+    fx = _fx_returning({"egp": {"usd": 1 / 50.0}})
+    svc = _service_with({"BTC": 60_000.0})
     update, context = _calc_update_context("5 egp btc", fx, svc)
     assert await _handle_calc(update, context, "5 egp btc") is True
     reply = _last_reply(update.effective_message)
     assert "5 EGP" in reply
     assert "BTC" in reply
+
+
+@pytest.mark.asyncio
+async def test_star_to_usd_uses_hardcoded_rate() -> None:
+    """``300 star`` ≈ 4.50 USD (1000 stars = $15)."""
+    fx = _fx_returning({})
+    svc = _service_with({})
+    update, context = _calc_update_context("300 star", fx, svc)
+    assert await _handle_calc(update, context, "300 star") is True
+    reply = _last_reply(update.effective_message)
+    assert "300 STAR" in reply
+    assert "4.5" in reply
+    assert "USD" in reply
+    # The exchange feed must not be queried for hard-coded symbols.
+    svc.usd_rate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_usd_to_star_uses_hardcoded_rate() -> None:
+    """``3 usd star`` ≈ 200 STAR (3 / 0.015)."""
+    fx = _fx_returning({})
+    svc = _service_with({})
+    update, context = _calc_update_context("3 usd star", fx, svc)
+    assert await _handle_calc(update, context, "3 usd star") is True
+    reply = _last_reply(update.effective_message)
+    assert "3 USD" in reply
+    assert "200" in reply
+    assert "STAR" in reply
+
+
+@pytest.mark.asyncio
+async def test_usdt_treated_as_usd_synonym() -> None:
+    """``3 usdt star`` ≈ 200 STAR — USDT is treated as 1 USD."""
+    fx = _fx_returning({})
+    svc = _service_with({})
+    update, context = _calc_update_context("3 usdt star", fx, svc)
+    assert await _handle_calc(update, context, "3 usdt star") is True
+    reply = _last_reply(update.effective_message)
+    assert "3 USDT" in reply
+    assert "200" in reply
+    assert "STAR" in reply
+
+
+@pytest.mark.asyncio
+async def test_crypto_rate_wins_over_fx_for_ambiguous_symbol() -> None:
+    """``20 mnt`` must use the Mantle crypto price, not Mongolian Tugrik FX.
+
+    ``MNT`` is both a fiat ISO code (Mongolian tugrik, ~$0.0003) and a
+    crypto symbol (Mantle, ~$0.66). A live price bot should pick the
+    crypto interpretation.
+    """
+    # Both feeds list MNT but with very different rates.
+    fx = _fx_returning({"mnt": {"usd": 0.0003}, "usd": {"mnt": 1 / 0.0003}})
+    svc = _service_with({"MNT": 0.6646})
+    update, context = _calc_update_context("20 mnt", fx, svc)
+    assert await _handle_calc(update, context, "20 mnt") is True
+    reply = _last_reply(update.effective_message)
+    assert "20 MNT" in reply
+    # 20 * 0.6646 ≈ 13.292 (with stripped trailing zeros it's "13.292"
+    # since the value is < 1000 and `_fmt_amount` uses 4-decimal precision).
+    assert "13.292" in reply
+    # FX should not have been touched for the from-side conversion since
+    # the crypto fallback resolved.
+    fx.convert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pure_fiat_symbol_falls_through_to_fx() -> None:
+    """``5 egp`` — EGP is not on crypto exchanges, so FX is consulted."""
+    fx = _fx_returning({"egp": {"usd": 1 / 50.0}})
+    svc = _service_with({})  # No crypto match for EGP.
+    update, context = _calc_update_context("5 egp", fx, svc)
+    assert await _handle_calc(update, context, "5 egp") is True
+    reply = _last_reply(update.effective_message)
+    assert "5 EGP" in reply
+    # 5 * (1/50) = 0.1 USD
+    assert "0.1" in reply
+    assert "USD" in reply

@@ -8,6 +8,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from html import escape
+from typing import Final
 
 from telegram import (
     InlineKeyboardButton,
@@ -56,6 +57,19 @@ _CALC_OPS = set("+-*/%^")
 # so concurrent updates serialize safely while still freeing the loop.
 _CHART_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="zeenova-chart")
 
+# Symbols whose USD value we know directly without hitting any feed. Two
+# kinds live here:
+#  * ``USDT`` — treated as 1 USD (close enough; saves a useless FX/exchange
+#    round-trip for the very common case of pricing things in tether).
+#  * ``STAR``/``STARS`` — Telegram Stars at the standard purchase rate of
+#    1000 stars = $15 (= $0.015/star). Hard-coded because there isn't a
+#    public price feed for them.
+_KNOWN_USD_RATES: Final[dict[str, float]] = {
+    "usdt": 1.0,
+    "star": 0.015,
+    "stars": 0.015,
+}
+
 def _help_text(settings: Settings) -> str:
     """Build the /start and /help message body from runtime settings."""
     return (
@@ -71,7 +85,9 @@ def _help_text(settings: Settings) -> str:
         "• Price a currency in USD — <code>300 btc</code> (BTC → USD), "
         "<code>2+2/4 eth</code>\n"
         "• Between any two currencies — <code>1 usd egp</code>, "
-        "<code>5000 egp btc</code>, <code>1 eth btc</code>\n\n"
+        "<code>5000 egp btc</code>, <code>1 eth btc</code>\n"
+        "• Telegram Stars — <code>300 star</code>, "
+        "<code>3 usd star</code>, <code>3 usdt star</code>\n\n"
         "<b>Data sources</b>\n"
         "Binance · Bybit · MEXC · CoinPaprika · fawazahmed0/currency-api\n\n"
         f'📣 <a href="{escape(settings.telegram_channel_url, quote=True)}">'
@@ -180,15 +196,27 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def _to_usd_rate(
     fx: FxClient, service: CoinService, ccy: str
 ) -> float | None:
-    """How many USD = 1 unit of ``ccy``. Tries the FX feed first, then the
-    exchange-based crypto price as a fallback for symbols FX doesn't list.
+    """How many USD = 1 unit of ``ccy``.
+
+    Resolution order:
+
+    1. ``USD`` and the entries in :data:`_KNOWN_USD_RATES` short-circuit.
+    2. Live crypto exchange price (Binance/Bybit/MEXC). We check this
+       *before* the FX feed because some 3-letter codes are reused
+       between fiat and crypto — e.g. ``MNT`` is both Mongolian tugrik
+       (fiat, ~$0.0003) and Mantle (crypto, ~$0.66). Users sending
+       ``20 mnt`` to a price bot almost always mean the crypto.
+    3. The fawazahmed0 FX feed for fiat-only symbols.
     """
-    if ccy.lower() == "usd":
+    lower = ccy.lower()
+    if lower == "usd":
         return 1.0
-    rate = await fx.convert(1.0, ccy, "usd")
-    if rate is not None:
-        return rate
-    return await service.usd_rate(ccy.upper())
+    if lower in _KNOWN_USD_RATES:
+        return _KNOWN_USD_RATES[lower]
+    crypto = await service.usd_rate(ccy.upper())
+    if crypto is not None:
+        return crypto
+    return await fx.convert(1.0, ccy, "usd")
 
 
 async def convert_with_fallback(
@@ -200,16 +228,15 @@ async def convert_with_fallback(
 ) -> float | None:
     """Convert ``amount`` from ``from_ccy`` to ``to_ccy``.
 
-    The fast path is a direct FX lookup. When that returns ``None`` we
-    bridge through USD: each side is priced in USD via FX or — if the
-    symbol isn't a known fiat / major crypto on the upstream feed — via
-    the live exchange rate from Binance/Bybit/MEXC. This means thinly
-    listed coins like ``OPG`` resolve to a real conversion instead of
-    surfacing as ``"Unsupported currency pair"``.
+    Both sides are priced in USD via :func:`_to_usd_rate` and the result
+    is the cross-rate. Bridging through USD (rather than a single direct
+    FX call) keeps the answer consistent regardless of which side is
+    fiat, crypto, or a hard-coded asset like Telegram Stars — and avoids
+    the FX feed silently returning the wrong currency for ambiguous
+    3-letter codes.
     """
-    direct = await fx.convert(amount, from_ccy, to_ccy)
-    if direct is not None:
-        return direct
+    if from_ccy.lower() == to_ccy.lower():
+        return amount
     from_usd = await _to_usd_rate(fx, service, from_ccy)
     to_usd = await _to_usd_rate(fx, service, to_ccy)
     if from_usd is None or to_usd is None or to_usd == 0:
