@@ -41,14 +41,35 @@ def _fx_returning(rates: dict[str, dict[str, float]]) -> AsyncMock:
     return fx
 
 
-def _service_with(usd_rates: dict[str, float]) -> AsyncMock:
-    """Build a mock CoinService whose ``usd_rate`` mirrors a static price sheet."""
+def _service_with(
+    usd_rates: dict[str, float],
+    *,
+    off_exchange_only: set[str] | None = None,
+) -> AsyncMock:
+    """Build a mock CoinService whose ``usd_rate`` mirrors a static price sheet.
+
+    ``off_exchange_only`` lists symbols that should resolve via the
+    off-exchange aggregator (CoinPaprika) rather than a major exchange,
+    which lets us simulate cases like the scam ``EGP`` token without
+    touching the network.
+    """
+    from zeenova_bot.services import OFF_EXCHANGE_SOURCE, CoinRef
+
+    off_exchange_only = off_exchange_only or set()
 
     async def usd_rate(symbol: str) -> float | None:
         return usd_rates.get(symbol.upper())
 
+    async def resolve(symbol: str) -> CoinRef | None:
+        s = symbol.upper()
+        if s not in usd_rates:
+            return None
+        source = OFF_EXCHANGE_SOURCE if s in off_exchange_only else "binance"
+        return CoinRef(symbol=s, pair=f"{s}/USD", source=source)
+
     svc = AsyncMock()
     svc.usd_rate = AsyncMock(side_effect=usd_rate)
+    svc.resolve = AsyncMock(side_effect=resolve)
     return svc
 
 
@@ -268,6 +289,47 @@ async def test_pure_fiat_symbol_falls_through_to_fx() -> None:
     assert "5 EGP" in reply
     # 5 * (1/50) = 0.1 USD
     assert "0.1" in reply
+    assert "USD" in reply
+
+
+@pytest.mark.asyncio
+async def test_fiat_beats_off_exchange_scam_token() -> None:
+    """``1 egp`` must use the Egyptian Pound FX rate, not a $200k-cap junk
+    crypto with the same ticker on a small aggregator.
+
+    Off-exchange aggregators index thousands of low-cap tokens, including
+    a "EGP" token at rank ~3300 with a $207k marketcap. Without this
+    guard, a user typing ``1 egp`` to convert from Egyptian Pounds would
+    get the scam token's price (~$0.06) instead of the real fiat rate
+    (~$0.019).
+    """
+    fx = _fx_returning({"egp": {"usd": 1 / 50.0}, "usd": {"egp": 50.0}})
+    # EGP "resolves" via CoinPaprika at $0.06 — that's the scam token.
+    svc = _service_with({"EGP": 0.0563}, off_exchange_only={"EGP"})
+    update, context = _calc_update_context("1 egp", fx, svc)
+    assert await _handle_calc(update, context, "1 egp") is True
+    reply = _last_reply(update.effective_message)
+    assert "1 EGP" in reply
+    # 1 * (1/50) = 0.02 USD via FX, not 0.0563 via the scam token.
+    assert "0.02" in reply
+    # Sanity-check we didn't accidentally use the scam crypto price.
+    assert "0.0563" not in reply
+    assert "0.056" not in reply
+
+
+@pytest.mark.asyncio
+async def test_thin_listed_coin_still_uses_off_exchange() -> None:
+    """``1 oct`` — OCT is only on CoinPaprika and *not* in the FX feed,
+    so we must still fall back to the off-exchange price.
+    """
+    fx = _fx_returning({})  # FX has no clue about OCT.
+    svc = _service_with({"OCT": 0.054}, off_exchange_only={"OCT"})
+    update, context = _calc_update_context("1 oct", fx, svc)
+    assert await _handle_calc(update, context, "1 oct") is True
+    reply = _last_reply(update.effective_message)
+    assert "1 OCT" in reply
+    # 1 * 0.054 = 0.054 USD from the off-exchange aggregator.
+    assert "0.054" in reply
     assert "USD" in reply
 
 
@@ -584,6 +646,7 @@ def _global_snapshot() -> object:
 def _cmd_update_context(
     *,
     paprika: object | None = None,
+    fear_greed: object | None = None,
 ) -> tuple[MagicMock, MagicMock]:
     msg = MagicMock()
     msg.reply_text = AsyncMock()
@@ -591,7 +654,11 @@ def _cmd_update_context(
     update.effective_message = msg
     update.effective_chat = MagicMock()
     context = MagicMock()
-    context.bot_data = {"paprika": paprika, "settings": _settings()}
+    context.bot_data = {
+        "paprika": paprika,
+        "fear_greed": fear_greed,
+        "settings": _settings(),
+    }
     return update, context
 
 
@@ -749,3 +816,41 @@ def test_parse_ticker_skips_invalid_rows() -> None:
         )
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_cmd_market_includes_fear_greed_when_available() -> None:
+    """``/market`` adds the Fear & Greed line when the client returns data."""
+    from zeenova_bot.fear_greed import FearGreed
+    from zeenova_bot.handlers import cmd_market
+
+    paprika = MagicMock()
+    paprika.fetch_global = AsyncMock(return_value=_global_snapshot())
+    fng = MagicMock()
+    fng.fetch_current = AsyncMock(
+        return_value=FearGreed(value=72, classification="Greed")
+    )
+    update, context = _cmd_update_context(paprika=paprika, fear_greed=fng)
+    await cmd_market(update, context)
+    body = _last_reply(update.effective_message)
+    assert "Fear &amp; Greed" in body  # HTML-escaped &
+    assert "72/100" in body
+    assert "Greed" in body
+
+
+@pytest.mark.asyncio
+async def test_cmd_market_omits_fear_greed_on_failure() -> None:
+    """If the Fear & Greed fetch fails, /market still renders global stats."""
+    from zeenova_bot.handlers import cmd_market
+
+    paprika = MagicMock()
+    paprika.fetch_global = AsyncMock(return_value=_global_snapshot())
+    fng = MagicMock()
+    fng.fetch_current = AsyncMock(side_effect=RuntimeError("boom"))
+    update, context = _cmd_update_context(paprika=paprika, fear_greed=fng)
+    await cmd_market(update, context)
+    body = _last_reply(update.effective_message)
+    # Global snapshot still rendered.
+    assert "$3.50T" in body
+    # No Fear & Greed line.
+    assert "Fear &amp; Greed" not in body
