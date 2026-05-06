@@ -74,6 +74,26 @@ def _expand_percents(expr: str) -> str:
     return _PERCENT_RE.sub(rf"{_PERCENT_MARKER}(\1)", expr)
 
 
+# Matches a run of one or more leading zeros followed by at least one
+# more digit. Lookbehind rejects digits and dots so we don't touch the
+# fractional part of ``1.02`` or alphanumeric tokens like ``0x10``;
+# lookahead allows a trailing ``.`` so we can normalise ``01.5`` →
+# ``1.5`` while still keeping ``0.5`` (zero followed by ``.``) intact.
+_LEADING_ZERO_RE = re.compile(r"(?<![\w.])0+(\d+)")
+
+
+def _strip_leading_zeros(expr: str) -> str:
+    """Normalise integer literals so Python doesn't reject them as octals.
+
+    Python 3 forbids leading zeros on decimal integer literals (``0294882``
+    raises ``SyntaxError``), but users typing arithmetic in chat reach
+    for things like phone numbers, padded counters, or arbitrary digit
+    runs all the time. Strip the leading zeros before handing the
+    expression to :func:`ast.parse`.
+    """
+    return _LEADING_ZERO_RE.sub(r"\1", expr)
+
+
 class CalcError(ValueError):
     """Raised when an expression isn't a pure arithmetic computation."""
 
@@ -93,6 +113,9 @@ def safe_eval(expr: str) -> float:
     # almost always mean ``2**10`` rather than the bitwise XOR Python gives
     # them by default.
     expr = expr.replace("^", "**")
+    # Strip leading zeros from integer literals so ``0294882`` parses as
+    # 294 882 instead of erroring out as a malformed octal.
+    expr = _strip_leading_zeros(expr)
     # Rewrite ``<num>%`` literals into a marker call (``__pct__(<num>)``)
     # *before* suffix expansion, so the optional ``k/m/b/t`` suffix is
     # captured inside the marker and then expanded normally on the next
