@@ -464,6 +464,27 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def _resolve_for_price_card(
+    service: CoinService, fx: FxClient, symbol: str
+) -> CoinRef | None:
+    """Resolve a price-card lookup, suppressing junk fiat clashes.
+
+    Wraps :meth:`CoinService.resolve`. If the *only* match comes from
+    the off-exchange aggregator (CoinPaprika) and the symbol is also a
+    known FX currency code (EGP, TRY, PKR, …), we treat it as
+    unknown — otherwise the user typing ``EGP`` would see a price
+    card for a $200k-cap scam token instead of recognising that EGP
+    is the Egyptian Pound. Coins that aren't on the FX feed (OCT,
+    OPG, …) are unaffected.
+    """
+    ref = await service.resolve(symbol)
+    if ref is None:
+        return None
+    if ref.source == OFF_EXCHANGE_SOURCE and await fx.supports(symbol):
+        return None
+    return ref
+
+
 async def _to_usd_rate(
     fx: FxClient, service: CoinService, ccy: str
 ) -> float | None:
@@ -808,9 +829,10 @@ async def on_inline_query(
 
     service: CoinService = context.bot_data["service"]
     settings: Settings = context.bot_data["settings"]
+    fx: FxClient = context.bot_data["fx"]
 
     try:
-        ref = await service.resolve(candidate)
+        ref = await _resolve_for_price_card(service, fx, candidate)
     except Exception:  # noqa: BLE001 — never let an inline query crash the bot
         logger.exception("inline: resolve failed for %r", candidate)
         await iq.answer([], cache_time=_INLINE_CACHE_SECONDS, is_personal=False)
@@ -868,8 +890,9 @@ async def _send_card(
 
     service: CoinService = context.bot_data["service"]
     settings: Settings = context.bot_data["settings"]
+    fx: FxClient = context.bot_data["fx"]
 
-    ref = await service.resolve(symbol)
+    ref = await _resolve_for_price_card(service, fx, symbol)
     if ref is None:
         if notify_if_unknown:
             await msg.reply_text(
