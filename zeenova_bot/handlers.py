@@ -68,7 +68,8 @@ def _help_text(settings: Settings) -> str:
         "• Tap <b>15M</b> · <b>1H</b> · <b>4H</b> · <b>1D</b> to switch timeframe\n\n"
         "<b>Calculator &amp; conversion</b>\n"
         "• Math — <code>2+2/4</code>, <code>(1+2)*3</code>\n"
-        "• To a target currency — <code>2+2/4 btc</code> (USD → BTC)\n"
+        "• Price a currency in USD — <code>300 btc</code> (BTC → USD), "
+        "<code>2+2/4 eth</code>\n"
         "• Between any two currencies — <code>1 usd egp</code>, "
         "<code>5000 egp btc</code>, <code>1 eth btc</code>\n\n"
         "<b>Data sources</b>\n"
@@ -276,9 +277,10 @@ async def _handle_calc(
 
     fx: FxClient = context.bot_data["fx"]
     service: CoinService = context.bot_data["service"]
-    # 1 currency given → ``USD → ccy1``. 2 given → ``ccy1 → ccy2``.
+    # 1 currency given → ``ccy1 → USD`` (the named currency is what the user
+    # has; USD is the implicit quote). 2 given → ``ccy1 → ccy2``.
     if ccy2 is None:
-        from_ccy, to_ccy = "usd", ccy1.lower()  # type: ignore[union-attr]
+        from_ccy, to_ccy = ccy1.lower(), "usd"  # type: ignore[union-attr]
     else:
         from_ccy, to_ccy = ccy1.lower(), ccy2.lower()  # type: ignore[union-attr]
 

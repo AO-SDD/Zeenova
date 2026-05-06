@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from zeenova_bot.handlers import convert_with_fallback
+from zeenova_bot.handlers import _handle_calc, convert_with_fallback
 
 
 def _fx_returning(rates: dict[str, dict[str, float]]) -> AsyncMock:
@@ -102,3 +102,77 @@ async def test_same_currency_returns_amount_unchanged() -> None:
     fx = _fx_returning({})
     svc = _service_with({})
     assert await convert_with_fallback(fx, svc, 42.0, "USD", "usd") == pytest.approx(42.0)
+
+
+def _calc_update_context(text: str, fx: AsyncMock, svc: AsyncMock) -> tuple[MagicMock, MagicMock]:
+    """Wire up a minimal Update + Context pair for ``_handle_calc``."""
+    msg = MagicMock()
+    msg.reply_text = AsyncMock()
+    update = MagicMock()
+    update.effective_message = msg
+    context = MagicMock()
+    context.bot_data = {"fx": fx, "service": svc}
+    return update, context
+
+
+def _last_reply(msg: MagicMock) -> str:
+    """Return the text the handler tried to send."""
+    msg.reply_text.assert_called()
+    args, _kwargs = msg.reply_text.call_args
+    return args[0]
+
+
+@pytest.mark.asyncio
+async def test_single_currency_input_treats_named_ccy_as_source() -> None:
+    """``300 btc`` means "300 BTC in USD", not "300 USD in BTC"."""
+    # Direction-asymmetric rate: only BTC→USD is wired so a wrong-direction
+    # call would silently return None and we'd see "Unsupported currency pair".
+    fx = _fx_returning({"btc": {"usd": 60_000.0}})
+    svc = _service_with({})
+    update, context = _calc_update_context("300 btc", fx, svc)
+    assert await _handle_calc(update, context, "300 btc") is True
+    reply = _last_reply(update.effective_message)
+    assert "300 BTC" in reply
+    # 300 * 60_000 = 18_000_000
+    assert "18,000,000" in reply
+    assert "USD" in reply
+
+
+@pytest.mark.asyncio
+async def test_single_currency_with_math_treats_named_ccy_as_source() -> None:
+    """``2+5 opg`` means "(2+5) OPG in USD"."""
+    fx = _fx_returning({})
+    svc = _service_with({"OPG": 0.25})  # 1 OPG = 0.25 USD
+    update, context = _calc_update_context("2+5 opg", fx, svc)
+    assert await _handle_calc(update, context, "2+5 opg") is True
+    reply = _last_reply(update.effective_message)
+    # 2+5 OPG = 7 OPG → 7 * 0.25 = 1.75 USD
+    assert "7 OPG" in reply
+    assert "1.75" in reply
+    assert "USD" in reply
+
+
+@pytest.mark.asyncio
+async def test_single_currency_suffix_treats_named_ccy_as_source() -> None:
+    """``1k opg`` means "1000 OPG in USD" (regression: suffix + flipped dir)."""
+    fx = _fx_returning({})
+    svc = _service_with({"OPG": 0.25})
+    update, context = _calc_update_context("1k opg", fx, svc)
+    assert await _handle_calc(update, context, "1k opg") is True
+    reply = _last_reply(update.effective_message)
+    # 1k OPG = 1000 OPG → 250 USD
+    assert "1,000.00 OPG" in reply
+    assert "250" in reply
+    assert "USD" in reply
+
+
+@pytest.mark.asyncio
+async def test_two_currencies_still_use_explicit_pair() -> None:
+    """``5 egp btc`` — explicit pair must still be ccy1 → ccy2 unchanged."""
+    fx = _fx_returning({"egp": {"btc": 4e-7}})
+    svc = _service_with({})
+    update, context = _calc_update_context("5 egp btc", fx, svc)
+    assert await _handle_calc(update, context, "5 egp btc") is True
+    reply = _last_reply(update.effective_message)
+    assert "5 EGP" in reply
+    assert "BTC" in reply
