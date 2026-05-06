@@ -164,3 +164,35 @@ def test_clean_symbol_helper_strips_suffixes() -> None:
     assert _clean_symbol("usdt") == "USDT"  # too short to strip USDT
     assert _clean_symbol("usd") == "USD"  # too short to strip USD
     assert _clean_symbol("  btc  ") == "BTC"
+
+
+@pytest.mark.asyncio
+async def test_usd_rate_returns_price_when_listed() -> None:
+    ticker: dict[str, float | None] = {
+        "price": 0.42,
+        "change_pct": None,
+        "high": None,
+        "low": None,
+        "volume_quote": None,
+    }
+    svc = _service(mexc_pairs={"OPG"}, mexc_ticker=ticker)
+    assert await svc.usd_rate("OPG") == pytest.approx(0.42)
+
+
+@pytest.mark.asyncio
+async def test_usd_rate_returns_none_when_unlisted() -> None:
+    svc = _service()
+    assert await svc.usd_rate("NOPE") is None
+
+
+@pytest.mark.asyncio
+async def test_usd_rate_returns_none_when_price_invalid() -> None:
+    ticker: dict[str, float | None] = {
+        "price": 0.0,  # Garbage price → don't bridge through it.
+        "change_pct": None,
+        "high": None,
+        "low": None,
+        "volume_quote": None,
+    }
+    svc = _service(binance_pairs={"BAD"}, binance_ticker=ticker)
+    assert await svc.usd_rate("BAD") is None

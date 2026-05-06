@@ -35,6 +35,11 @@ from .fx import FxClient
 from .services import CoinNotFound, CoinRef, CoinService
 from .timeframes import DEFAULT_TIMEFRAME, TIMEFRAMES, Timeframe, get_timeframe
 
+__all__ = [
+    "build_application",
+    "convert_with_fallback",
+]
+
 logger = logging.getLogger(__name__)
 
 # Free-text symbols are short alphanumeric tokens. Anything with spaces or
@@ -171,6 +176,46 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def _to_usd_rate(
+    fx: FxClient, service: CoinService, ccy: str
+) -> float | None:
+    """How many USD = 1 unit of ``ccy``. Tries the FX feed first, then the
+    exchange-based crypto price as a fallback for symbols FX doesn't list.
+    """
+    if ccy.lower() == "usd":
+        return 1.0
+    rate = await fx.convert(1.0, ccy, "usd")
+    if rate is not None:
+        return rate
+    return await service.usd_rate(ccy.upper())
+
+
+async def convert_with_fallback(
+    fx: FxClient,
+    service: CoinService,
+    amount: float,
+    from_ccy: str,
+    to_ccy: str,
+) -> float | None:
+    """Convert ``amount`` from ``from_ccy`` to ``to_ccy``.
+
+    The fast path is a direct FX lookup. When that returns ``None`` we
+    bridge through USD: each side is priced in USD via FX or — if the
+    symbol isn't a known fiat / major crypto on the upstream feed — via
+    the live exchange rate from Binance/Bybit/MEXC. This means thinly
+    listed coins like ``OPG`` resolve to a real conversion instead of
+    surfacing as ``"Unsupported currency pair"``.
+    """
+    direct = await fx.convert(amount, from_ccy, to_ccy)
+    if direct is not None:
+        return direct
+    from_usd = await _to_usd_rate(fx, service, from_ccy)
+    to_usd = await _to_usd_rate(fx, service, to_ccy)
+    if from_usd is None or to_usd is None or to_usd == 0:
+        return None
+    return amount * from_usd / to_usd
+
+
 def _fmt_amount(value: float) -> str:
     """Pretty-print a numeric amount with sensible precision per magnitude.
 
@@ -230,6 +275,7 @@ async def _handle_calc(
         return True
 
     fx: FxClient = context.bot_data["fx"]
+    service: CoinService = context.bot_data["service"]
     # 1 currency given → ``USD → ccy1``. 2 given → ``ccy1 → ccy2``.
     if ccy2 is None:
         from_ccy, to_ccy = "usd", ccy1.lower()  # type: ignore[union-attr]
@@ -237,7 +283,7 @@ async def _handle_calc(
         from_ccy, to_ccy = ccy1.lower(), ccy2.lower()  # type: ignore[union-attr]
 
     try:
-        converted = await fx.convert(value, from_ccy, to_ccy)
+        converted = await convert_with_fallback(fx, service, value, from_ccy, to_ccy)
     except Exception:  # noqa: BLE001
         logger.exception("fx: convert raised for %s -> %s", from_ccy, to_ccy)
         await msg.reply_text(

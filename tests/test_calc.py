@@ -66,6 +66,40 @@ class TestSafeEval:
         assert isinstance(result, float)
         assert math.isfinite(result)
 
+    @pytest.mark.parametrize(
+        ("expr", "expected"),
+        [
+            ("1k", 1_000.0),
+            ("1K", 1_000.0),
+            ("2.5k", 2_500.0),
+            ("1m", 1_000_000.0),
+            ("1.5M", 1_500_000.0),
+            ("1b", 1_000_000_000.0),
+            ("1t", 1_000_000_000_000.0),
+            ("1k+1", 1_001.0),
+            ("1k + 1", 1_001.0),
+            ("2k * 3", 6_000.0),
+            ("(1k+500) / 2", 750.0),
+            ("1m - 1k", 999_000.0),
+        ],
+    )
+    def test_magnitude_suffixes(self, expr: str, expected: float) -> None:
+        assert safe_eval(expr) == pytest.approx(expected)
+
+    def test_invalid_suffix_combo_rejected(self) -> None:
+        # ``1mb`` is not a meaningful suffix; the negative lookahead in the
+        # suffix regex leaves it un-expanded so the AST parser rejects it.
+        with pytest.raises(CalcError):
+            safe_eval("1mb")
+
+    def test_syntax_error_not_duplicated(self) -> None:
+        # Regression: ``5%`` used to surface as
+        # ``"invalid syntax: invalid syntax"`` because we prefixed the
+        # already-prefixed ``SyntaxError.msg``.
+        with pytest.raises(CalcError) as exc_info:
+            safe_eval("5%")
+        assert "invalid syntax: invalid syntax" not in str(exc_info.value)
+
 
 class TestParseInput:
     def test_pure_math(self) -> None:
@@ -98,3 +132,16 @@ class TestParseInput:
         assert parsed is not None
         with pytest.raises(CalcError):
             safe_eval(parsed[0])
+
+    def test_suffix_in_expression(self) -> None:
+        # ``1k+1`` keeps the ``k`` glued to the digit so it parses as one
+        # arithmetic expression, not as expression ``1`` plus a bogus
+        # currency ``k+1``.
+        assert parse_input("1k+1") == ("1k+1", None, None)
+        assert parse_input("2.5m") == ("2.5m", None, None)
+
+    def test_suffix_with_currency(self) -> None:
+        assert parse_input("1k+1 EGP") == ("1k+1", "EGP", None)
+        assert parse_input("1k+1 ETH") == ("1k+1", "ETH", None)
+        assert parse_input("2.5m USD EGP") == ("2.5m", "USD", "EGP")
+        assert parse_input("1k egp") == ("1k", "egp", None)
