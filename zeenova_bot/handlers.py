@@ -3,24 +3,30 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import logging
 import re
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from html import escape
 from typing import Final
 
+from cachetools import TTLCache
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InlineQueryResultArticle,
     InputMediaPhoto,
     InputTextMessageContent,
+    Message,
+    MessageEntity,
     Update,
+    User,
 )
 from telegram.constants import ChatAction, ChatType, ParseMode
-from telegram.error import BadRequest
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     AIORateLimiter,
     Application,
@@ -40,7 +46,12 @@ from .coinpaprika import CoinPaprikaClient, GlobalSnapshot, TickerSnapshot
 from .config import Settings
 from .fear_greed import FearGreed, FearGreedClient, render_dial
 from .fx import FxClient
-from .quote_sticker import QuoteAuthor, QuoteStickerClient
+from .quote_sticker import (
+    QuoteAuthor,
+    QuoteEntity,
+    QuoteStickerClient,
+    ReplyContext,
+)
 from .services import (
     OFF_EXCHANGE_SOURCE,
     CoinNotFound,
@@ -87,6 +98,15 @@ _CHART_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="zeenova-
 # memoised inside :func:`render_dial`, so under normal load nearly every call
 # is a cache hit anyway.
 _DIAL_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="zeenova-dial")
+
+# Telegram profile photos rarely change. Cache the rendered ``data:image``
+# URL so the bot doesn't hit Bot API + downloads the JPEG on every quote
+# sticker. ``None`` is also memoised so users without a photo (or with one
+# we can't read) don't get retried on every reply.
+_AVATAR_CACHE: TTLCache[int, str | None] = TTLCache(maxsize=2048, ttl=60 * 60 * 12)
+# A single in-flight request per user so a flurry of replies doesn't fan
+# out into N concurrent Bot API calls for the same avatar.
+_AVATAR_LOCKS: dict[int, asyncio.Lock] = {}
 
 # Symbols whose USD value we know directly without hitting any feed. Two
 # kinds live here:
@@ -474,6 +494,100 @@ async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+def _convert_entities(
+    entities: Sequence[MessageEntity] | None,
+) -> list[QuoteEntity]:
+    """Map PTB ``MessageEntity`` instances to our wire format.
+
+    Only the styling-relevant fields the quote API supports are kept.
+    Unknown entity types pass through as-is so the upstream renderer
+    can decide whether to handle them.
+    """
+    if not entities:
+        return []
+    out: list[QuoteEntity] = []
+    for ent in entities:
+        out.append(
+            QuoteEntity(
+                type=str(ent.type),
+                offset=int(ent.offset),
+                length=int(ent.length),
+                url=ent.url,
+                custom_emoji_id=ent.custom_emoji_id,
+            )
+        )
+    return out
+
+
+def _display_name(user: User) -> str:
+    """Best human-readable label for a Telegram user."""
+    return (
+        user.full_name
+        or user.first_name
+        or user.username
+        or "Unknown"
+    )
+
+
+async def _fetch_avatar_data_url(
+    context: ContextTypes.DEFAULT_TYPE, user_id: int
+) -> str | None:
+    """Return ``data:image/jpeg;base64,…`` for the user's avatar or ``None``.
+
+    Cached for 12 hours per user. Failures (no profile photo, privacy
+    settings, network error) are also cached as ``None`` so we don't
+    keep retrying for the same user.
+    """
+    if user_id in _AVATAR_CACHE:
+        return _AVATAR_CACHE[user_id]
+    lock = _AVATAR_LOCKS.setdefault(user_id, asyncio.Lock())
+    async with lock:
+        if user_id in _AVATAR_CACHE:
+            return _AVATAR_CACHE[user_id]
+        data_url: str | None = None
+        try:
+            photos = await context.bot.get_user_profile_photos(
+                user_id, limit=1
+            )
+            if photos.total_count and photos.photos:
+                # Each "photo" is a list of sizes from smallest to
+                # largest. Pick the largest for a sharp avatar at
+                # sticker scale.
+                sizes = photos.photos[0]
+                if sizes:
+                    file = await context.bot.get_file(sizes[-1].file_id)
+                    raw = await file.download_as_bytearray()
+                    encoded = base64.b64encode(bytes(raw)).decode("ascii")
+                    data_url = f"data:image/jpeg;base64,{encoded}"
+        except TelegramError:
+            logger.debug("avatar fetch: bot API rejected user %s", user_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("avatar fetch: unexpected error for user %s", user_id)
+        _AVATAR_CACHE[user_id] = data_url
+        return data_url
+
+
+def _select_quote_text(
+    msg: Message, parent: Message
+) -> tuple[str, list[QuoteEntity]]:
+    """Pick the text + entities to render in the sticker.
+
+    If the user used Telegram's *Quote* feature (introduced in 2024) and
+    only highlighted part of the parent message, prefer that snippet.
+    Otherwise fall back to the parent's full text or caption. Entities
+    track whichever source is chosen so styling stays accurate.
+    """
+    quote = msg.quote
+    if quote is not None and (quote.text or "").strip():
+        return quote.text.strip(), _convert_entities(quote.entities)
+    if parent.text:
+        return parent.text.strip(), _convert_entities(parent.entities)
+    caption = (parent.caption or "").strip()
+    if caption:
+        return caption, _convert_entities(parent.caption_entities)
+    return "", []
+
+
 async def _maybe_make_quote_sticker(
     update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
 ) -> bool:
@@ -494,9 +608,8 @@ async def _maybe_make_quote_sticker(
         # ``z`` typed without replying to anything. Treat as casual chat
         # and fall through silently.
         return False
-    parent_text = parent.text or parent.caption or ""
-    parent_text = parent_text.strip()
-    if not parent_text:
+    quote_text, quote_entities = _select_quote_text(msg, parent)
+    if not quote_text:
         return True  # nothing to quote; swallow the trigger
     parent_user = parent.from_user
     if parent_user is None:
@@ -506,18 +619,33 @@ async def _maybe_make_quote_sticker(
     )
     if quote_client is None:
         return False
-    name = (
-        parent_user.full_name
-        or parent_user.first_name
-        or parent_user.username
-        or "Unknown"
-    )
+    avatar_url = await _fetch_avatar_data_url(context, parent_user.id)
     author = QuoteAuthor(
         user_id=parent_user.id,
-        name=name,
+        name=_display_name(parent_user),
         username=parent_user.username,
+        photo_data_url=avatar_url,
     )
-    image = await quote_client.render(author, parent_text)
+    # If the parent itself was a reply, surface that one-line context
+    # above the main quote — same chrome Telegram uses natively.
+    reply_ctx: ReplyContext | None = None
+    grandparent = parent.reply_to_message
+    if grandparent is not None and grandparent.from_user is not None:
+        gp_text = (grandparent.text or grandparent.caption or "").strip()
+        if gp_text:
+            reply_ctx = ReplyContext(
+                name=_display_name(grandparent.from_user),
+                text=gp_text,
+                entities=_convert_entities(
+                    grandparent.entities or grandparent.caption_entities
+                ),
+            )
+    image = await quote_client.render(
+        author,
+        quote_text,
+        entities=quote_entities,
+        reply=reply_ctx,
+    )
     if image is None:
         return True  # claimed the trigger but couldn't render — stay silent
     try:

@@ -962,6 +962,9 @@ def _quote_update_context(
     msg.text = text
     msg.reply_text = AsyncMock()
     msg.reply_sticker = AsyncMock()
+    # No Telegram-quote highlight by default; tests that exercise that
+    # path opt in by overwriting ``msg.quote`` after this fixture returns.
+    msg.quote = None
 
     if parent_text is None and parent_caption is None and parent_user is None:
         msg.reply_to_message = None
@@ -969,6 +972,11 @@ def _quote_update_context(
         parent = MagicMock()
         parent.text = parent_text
         parent.caption = parent_caption
+        # Default to no rich entities and no nested reply chain so the
+        # handler doesn't try to walk MagicMock fakes.
+        parent.entities = ()
+        parent.caption_entities = ()
+        parent.reply_to_message = None
         if parent_user == "default":
             user = MagicMock()
             user.id = 9999
@@ -999,6 +1007,15 @@ def _quote_update_context(
     fx.supports = AsyncMock(return_value=False)
     service = MagicMock()
     service.resolve = AsyncMock(return_value=None)
+    # Avatar lookups go through ``context.bot`` — stub the two methods
+    # the handler touches so the tests don't need network access.
+    profile_photos = MagicMock()
+    profile_photos.total_count = 0
+    profile_photos.photos = ()
+    bot = MagicMock()
+    bot.get_user_profile_photos = AsyncMock(return_value=profile_photos)
+    bot.get_file = AsyncMock()
+    context.bot = bot
     context.bot_data = {
         "quote_sticker": client,
         "settings": _settings(),
@@ -1116,3 +1133,46 @@ async def test_quote_trigger_works_in_dm() -> None:
     update, context = _quote_update_context("z", chat_type=ChatType.PRIVATE)
     await on_text(update, context)
     update.effective_message.reply_sticker.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_quote_trigger_uses_telegram_quote_snippet() -> None:
+    """If the user used Telegram's quote feature, sticker the snippet —
+    not the parent's full message text."""
+    from zeenova_bot.handlers import on_text
+
+    update, context = _quote_update_context(
+        "z", parent_text="The full original message body."
+    )
+    quote = MagicMock()
+    quote.text = "original message"
+    quote.entities = ()
+    update.effective_message.quote = quote
+
+    await on_text(update, context)
+
+    client = context.bot_data["quote_sticker"]
+    args, _ = client.render.call_args
+    _author, text = args
+    assert text == "original message"
+
+
+@pytest.mark.asyncio
+async def test_quote_trigger_falls_back_when_quote_text_blank() -> None:
+    """Empty highlight → fall back to the parent's full text."""
+    from zeenova_bot.handlers import on_text
+
+    update, context = _quote_update_context(
+        "z", parent_text="Whole parent body"
+    )
+    quote = MagicMock()
+    quote.text = "   "  # whitespace-only highlight
+    quote.entities = ()
+    update.effective_message.quote = quote
+
+    await on_text(update, context)
+
+    client = context.bot_data["quote_sticker"]
+    args, _ = client.render.call_args
+    _author, text = args
+    assert text == "Whole parent body"
