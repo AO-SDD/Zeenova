@@ -718,7 +718,7 @@ async def _handle_calc(
     expr_pretty = " ".join(expr.split())
     if not has_ccy:
         # Pure math.
-        body = f"🧮 <code>{escape(expr_pretty)}</code>\n= <code>{_fmt_amount(value)}</code>"
+        body = f"<code>{escape(expr_pretty)}</code>\n= <code>{_fmt_amount(value)}</code>"
         await msg.reply_text(body, parse_mode=ParseMode.HTML)
         return True
 
@@ -751,9 +751,9 @@ async def _handle_calc(
     from_str = f"{_fmt_amount(value)} {from_ccy.upper()}"
     to_str = f"{_fmt_amount(converted)} {to_ccy.upper()}"
     if has_op:
-        header = f"🧮 <code>{escape(expr_pretty)}</code> = {escape(from_str)}"
+        header = f"<code>{escape(expr_pretty)}</code> = {escape(from_str)}"
     else:
-        header = f"💱 {escape(from_str)}"
+        header = escape(from_str)
     body = f"{header}\n≈ <code>{escape(to_str)}</code>"
     await msg.reply_text(body, parse_mode=ParseMode.HTML)
     return True
