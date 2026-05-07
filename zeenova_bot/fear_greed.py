@@ -197,11 +197,18 @@ def _try_load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
-def render_dial(value: int, classification: str | None = None) -> bytes:
+def render_dial(
+    value: int,
+    classification: str | None = None,
+    *,
+    brand: str | None = "Zeenova",
+) -> bytes:
     """Render a Binance/CMC-style Fear & Greed dial as PNG bytes.
 
     Always succeeds; ``value`` is clamped to ``[0, 100]`` and the
     classification text falls back to :func:`_classify` if not provided.
+    ``brand`` is shown as a watermark in the top-right corner; pass
+    ``None`` or an empty string to disable.
     """
     value = max(0, min(100, int(value)))
     label = (classification or _classify(value)).strip() or _classify(value)
@@ -266,22 +273,28 @@ def render_dial(value: int, classification: str | None = None) -> bytes:
         fill=(220, 220, 220),
     )
 
-    # Big centred value text + classification label underneath.
+    # Big centred value text + classification label underneath, with
+    # comfortable breathing room between the two so they don't read as
+    # one merged blob.
     value_text = str(value)
     label_text = label
     value_font = _try_load_font(120)
     label_font = _try_load_font(40)
 
+    label_gap = 44  # px of empty space between the value and the label
     vw, vh = _text_size(draw, value_text, value_font)
+    lw, lh = _text_size(draw, label_text, label_font)
+    block_h = vh + label_gap + lh
+    value_y = cy - block_h // 2
+    label_y = value_y + vh + label_gap
     draw.text(
-        (cx - vw // 2, cy - vh - 8),
+        (cx - vw // 2, value_y),
         value_text,
         font=value_font,
         fill=(255, 255, 255),
     )
-    lw, lh = _text_size(draw, label_text, label_font)
     draw.text(
-        (cx - lw // 2, cy - 4),
+        (cx - lw // 2, label_y),
         label_text,
         font=label_font,
         fill=_color_for(value),
@@ -297,6 +310,25 @@ def render_dial(value: int, classification: str | None = None) -> bytes:
         font=title_font,
         fill=(200, 200, 200),
     )
+
+    # Brand watermark in the top-right corner. We use a saturated accent
+    # (the same yellow/green family as the dial's neutral band) so the
+    # name pops without competing with the gauge for attention.
+    if brand:
+        brand_font = _try_load_font(28)
+        bw, bh = _text_size(draw, brand, brand_font)
+        margin = 24
+        bx = width - bw - margin
+        by = margin
+        # Subtle pill background so the name reads cleanly over any
+        # arc colour underneath if the layout ever changes.
+        pad_x, pad_y = 14, 8
+        draw.rounded_rectangle(
+            (bx - pad_x, by - pad_y, bx + bw + pad_x, by + bh + pad_y),
+            radius=12,
+            fill=(28, 30, 36),
+        )
+        draw.text((bx, by), brand, font=brand_font, fill=(243, 212, 47))
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
