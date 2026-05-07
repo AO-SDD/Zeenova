@@ -104,3 +104,13 @@ def test_render_dial_falls_back_when_classification_missing() -> None:
 def test_render_dial_handles_empty_classification() -> None:
     data = render_dial(50, "   ")
     assert data[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_render_dial_with_and_without_brand_differ() -> None:
+    """The brand watermark must actually change the output bytes."""
+    with_brand = render_dial(50, "Neutral", brand="Zeenova")
+    no_brand = render_dial(50, "Neutral", brand=None)
+    empty_brand = render_dial(50, "Neutral", brand="")
+    assert with_brand != no_brand
+    # Empty string disables the watermark, same as None.
+    assert empty_brand == no_brand

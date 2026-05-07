@@ -399,7 +399,9 @@ async def cmd_market(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         # Falls back to a plain text reply if Telegram rejects the
         # photo for any reason so /market never silently disappears.
         try:
-            dial_png = render_dial(fng.value, fng.classification)
+            dial_png = render_dial(
+                fng.value, fng.classification, brand=settings.brand_name
+            )
             await msg.reply_photo(
                 photo=io.BytesIO(dial_png),
                 caption=body,
