@@ -936,3 +936,178 @@ async def test_cmd_market_omits_fear_greed_on_failure() -> None:
     assert "$3.50T" in body
     # No Fear & Greed line.
     assert "Fear &amp; Greed" not in body
+
+
+# ---------------------------------------------------------------------------
+# Quote-sticker trigger ("z" reply)
+# ---------------------------------------------------------------------------
+
+
+def _quote_update_context(
+    text: str,
+    *,
+    parent_text: str | None = "Hello, world!",
+    parent_caption: str | None = None,
+    parent_user: object | None = "default",
+    quote_client: object | None = "default",
+    chat_type: ChatType = ChatType.GROUP,
+) -> tuple[MagicMock, MagicMock]:
+    """Wire up a minimal Update + Context for quote-sticker trigger tests."""
+    msg = MagicMock()
+    msg.text = text
+    msg.reply_text = AsyncMock()
+    msg.reply_sticker = AsyncMock()
+
+    if parent_text is None and parent_caption is None and parent_user is None:
+        msg.reply_to_message = None
+    else:
+        parent = MagicMock()
+        parent.text = parent_text
+        parent.caption = parent_caption
+        if parent_user == "default":
+            user = MagicMock()
+            user.id = 9999
+            user.full_name = "Quoted User"
+            user.first_name = "Quoted"
+            user.username = "quoted"
+            parent.from_user = user
+        else:
+            parent.from_user = parent_user
+        msg.reply_to_message = parent
+
+    update = MagicMock()
+    update.effective_message = msg
+    chat = MagicMock()
+    chat.type = chat_type
+    chat.id = 1
+    update.effective_chat = chat
+
+    context = MagicMock()
+    if quote_client == "default":
+        client = MagicMock()
+        client.render = AsyncMock(return_value=b"webp-bytes")
+    else:
+        client = quote_client
+    # Calc / symbol path requires these too — provide AsyncMock stubs so
+    # the on_text fall-through doesn't crash on awaitable-less mocks.
+    fx = MagicMock()
+    fx.supports = AsyncMock(return_value=False)
+    service = MagicMock()
+    service.resolve = AsyncMock(return_value=None)
+    context.bot_data = {
+        "quote_sticker": client,
+        "settings": _settings(),
+        "fx": fx,
+        "service": service,
+    }
+    return update, context
+
+
+@pytest.mark.asyncio
+async def test_quote_trigger_sends_sticker_for_z_reply() -> None:
+    """Replying ``z`` to a message renders & sends the quote sticker."""
+    from zeenova_bot.handlers import on_text
+
+    update, context = _quote_update_context("z")
+    await on_text(update, context)
+
+    msg = update.effective_message
+    msg.reply_sticker.assert_called_once()
+    msg.reply_text.assert_not_called()  # No price-card / calc fall-through.
+
+    client = context.bot_data["quote_sticker"]
+    client.render.assert_awaited_once()
+    args, _kwargs = client.render.call_args
+    author, text = args
+    assert author.user_id == 9999
+    assert author.name == "Quoted User"
+    assert text == "Hello, world!"
+
+
+@pytest.mark.asyncio
+async def test_quote_trigger_accepts_uppercase_z() -> None:
+    """Uppercase ``Z`` triggers the same handler."""
+    from zeenova_bot.handlers import on_text
+
+    update, context = _quote_update_context("Z")
+    await on_text(update, context)
+    update.effective_message.reply_sticker.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_quote_trigger_uses_parent_caption_when_no_text() -> None:
+    """If the parent is a media message with caption, quote the caption."""
+    from zeenova_bot.handlers import on_text
+
+    update, context = _quote_update_context(
+        "z", parent_text=None, parent_caption="Photo caption"
+    )
+    await on_text(update, context)
+    client = context.bot_data["quote_sticker"]
+    args, _ = client.render.call_args
+    assert args[1] == "Photo caption"
+
+
+@pytest.mark.asyncio
+async def test_quote_trigger_ignored_without_reply() -> None:
+    """``z`` typed without replying to anything must not call the API."""
+    from zeenova_bot.handlers import on_text
+
+    update, context = _quote_update_context(
+        "z", parent_text=None, parent_caption=None, parent_user=None
+    )
+    await on_text(update, context)
+    client = context.bot_data["quote_sticker"]
+    client.render.assert_not_called()
+    update.effective_message.reply_sticker.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_quote_trigger_swallows_when_parent_has_no_text() -> None:
+    """Reply to a media-only message → silently swallow, don't calc."""
+    from zeenova_bot.handlers import on_text
+
+    update, context = _quote_update_context(
+        "z", parent_text=None, parent_caption=None
+    )
+    await on_text(update, context)
+    client = context.bot_data["quote_sticker"]
+    client.render.assert_not_called()
+    update.effective_message.reply_sticker.assert_not_called()
+    # And we must not have fallen through to calc / symbol either.
+    update.effective_message.reply_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_quote_trigger_two_z_chars_does_not_trigger() -> None:
+    """``zz`` is not the trigger (regression: keep the regex strict)."""
+    from zeenova_bot.handlers import on_text
+
+    update, context = _quote_update_context("zz")
+    await on_text(update, context)
+    client = context.bot_data["quote_sticker"]
+    client.render.assert_not_called()
+    update.effective_message.reply_sticker.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_quote_trigger_silent_when_render_fails() -> None:
+    """API hiccup → no sticker, no error message — just stay quiet."""
+    from zeenova_bot.handlers import on_text
+
+    failing_client = MagicMock()
+    failing_client.render = AsyncMock(return_value=None)
+    update, context = _quote_update_context("z", quote_client=failing_client)
+    await on_text(update, context)
+    update.effective_message.reply_sticker.assert_not_called()
+    update.effective_message.reply_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_quote_trigger_works_in_dm() -> None:
+    """Trigger works in private chat too, not just groups."""
+    from zeenova_bot.handlers import on_text
+
+    update, context = _quote_update_context("z", chat_type=ChatType.PRIVATE)
+    await on_text(update, context)
+    update.effective_message.reply_sticker.assert_called_once()

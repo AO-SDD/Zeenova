@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -39,6 +40,7 @@ from .config import Settings
 from .fear_greed import IMAGE_URL as FEAR_GREED_IMAGE_URL
 from .fear_greed import FearGreed, FearGreedClient
 from .fx import FxClient
+from .quote_sticker import QuoteAuthor, QuoteStickerClient
 from .services import (
     OFF_EXCHANGE_SOURCE,
     CoinNotFound,
@@ -58,6 +60,12 @@ logger = logging.getLogger(__name__)
 # Free-text symbols are short alphanumeric tokens. Anything with spaces or
 # punctuation is ignored to keep group chatter from triggering the bot.
 _SYMBOL_RE = re.compile(r"^\$?([A-Za-z][A-Za-z0-9]{1,11})$")
+
+# Quote-sticker trigger: a one-character reply of "z" / "Z" turns the
+# message we're replying to into a quote sticker. Matches QuotLyBot's
+# behaviour. Trailing whitespace is tolerated; anything else (e.g. ``zz``,
+# ``z!``) intentionally doesn't trigger.
+_QUOTE_STICKER_TRIGGER_RE = re.compile(r"^[zZ]$")
 
 # Operators that signal a clear calculator intent. If a free-text message
 # contains at least one of these, we always reply with either a result or
@@ -444,6 +452,59 @@ async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def _maybe_make_quote_sticker(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
+) -> bool:
+    """If ``text`` is the quote-sticker trigger, render & send a sticker.
+
+    Returns True when we either rendered + sent the sticker or decided
+    the message *was* a trigger but rendering failed (so the caller
+    must not fall through to the calc / symbol handlers and reply with
+    an unrelated card on top of the user's quote attempt).
+    """
+    if not _QUOTE_STICKER_TRIGGER_RE.match(text):
+        return False
+    msg = update.effective_message
+    if msg is None:
+        return False
+    parent = msg.reply_to_message
+    if parent is None:
+        # ``z`` typed without replying to anything. Treat as casual chat
+        # and fall through silently.
+        return False
+    parent_text = parent.text or parent.caption or ""
+    parent_text = parent_text.strip()
+    if not parent_text:
+        return True  # nothing to quote; swallow the trigger
+    parent_user = parent.from_user
+    if parent_user is None:
+        return True
+    quote_client: QuoteStickerClient | None = context.bot_data.get(
+        "quote_sticker"
+    )
+    if quote_client is None:
+        return False
+    name = (
+        parent_user.full_name
+        or parent_user.first_name
+        or parent_user.username
+        or "Unknown"
+    )
+    author = QuoteAuthor(
+        user_id=parent_user.id,
+        name=name,
+        username=parent_user.username,
+    )
+    image = await quote_client.render(author, parent_text)
+    if image is None:
+        return True  # claimed the trigger but couldn't render — stay silent
+    try:
+        await msg.reply_sticker(sticker=io.BytesIO(image))
+    except Exception:  # noqa: BLE001 — never let a sticker send crash the handler
+        logger.exception("quote-sticker: send failed")
+    return True
+
+
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     chat = update.effective_chat
@@ -458,6 +519,12 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     text = msg.text.strip()
+
+    # Quote-sticker trigger ("z" / "Z" in reply to another message). Runs
+    # before calc / symbol so a one-letter reply doesn't accidentally fall
+    # into the calculator's syntax-error path.
+    if await _maybe_make_quote_sticker(update, context, text):
+        return
 
     # Calc / FX first: anything with a digit may be ``2+2``, ``1 usd egp``,
     # ``2+2/4 btc``, etc. ``handle_calc`` returns True if it claimed the
