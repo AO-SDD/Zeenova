@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from typing import Any
 
 import httpx
@@ -11,7 +12,9 @@ import pytest
 from zeenova_bot.quote_sticker import (
     API_URL,
     QuoteAuthor,
+    QuoteEntity,
     QuoteStickerClient,
+    ReplyContext,
 )
 
 
@@ -126,4 +129,55 @@ async def test_render_truncates_very_long_text() -> None:
     # Body contains a substring of the input but not the full 5000 a's.
     assert long_text not in captured["body"]
     assert "a" * 1024 in captured["body"]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_render_forwards_avatar_data_url() -> None:
+    """``photo_data_url`` lands in ``from.photo.url`` when set."""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(200, json=_ok_payload(b"x"))
+
+    client = _client_with(handler)
+    author = QuoteAuthor(
+        user_id=1,
+        name="x",
+        photo_data_url="data:image/jpeg;base64,AAAA",
+    )
+    await client.render(author, "hi")
+    msg = captured["body"]["messages"][0]
+    assert msg["from"]["photo"] == {"url": "data:image/jpeg;base64,AAAA"}
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_render_forwards_entities_and_reply() -> None:
+    """Entities + replyMessage are passed through to the upstream API."""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(200, json=_ok_payload(b"x"))
+
+    client = _client_with(handler)
+    author = QuoteAuthor(user_id=1, name="x")
+    entities = [QuoteEntity(type="bold", offset=0, length=4)]
+    reply = ReplyContext(
+        name="Alice",
+        text="parent text",
+        entities=[QuoteEntity(type="italic", offset=0, length=6)],
+    )
+    await client.render(author, "Hello!", entities=entities, reply=reply)
+    msg = captured["body"]["messages"][0]
+    assert msg["entities"] == [
+        {"type": "bold", "offset": 0, "length": 4},
+    ]
+    assert msg["replyMessage"]["name"] == "Alice"
+    assert msg["replyMessage"]["text"] == "parent text"
+    assert msg["replyMessage"]["entities"] == [
+        {"type": "italic", "offset": 0, "length": 6},
+    ]
     await client.aclose()

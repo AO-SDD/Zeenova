@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import base64
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final
 
 import httpx
@@ -35,11 +35,65 @@ MAX_TEXT_LEN: Final[int] = 1024
 
 @dataclass(slots=True)
 class QuoteAuthor:
-    """Author metadata for a single message in a quote sticker."""
+    """Author metadata for a single message in a quote sticker.
+
+    ``photo_data_url`` is an optional ``data:image/...;base64,...`` URL
+    of the author's Telegram profile photo. When present the sticker
+    renders the real avatar instead of an initials circle, which is the
+    single biggest quality win over the bare-bones default.
+    """
 
     user_id: int
     name: str  # Display name (first + last, or username fallback).
     username: str | None = None
+    photo_data_url: str | None = None
+
+
+@dataclass(slots=True)
+class QuoteEntity:
+    """Subset of ``telegram.MessageEntity`` we pass to bot.lyo.su.
+
+    Only the fields the quote API actually understands are kept; bot
+    handlers convert PTB ``MessageEntity`` instances into this struct
+    so this module stays decoupled from python-telegram-bot.
+    """
+
+    type: str
+    offset: int
+    length: int
+    url: str | None = None
+    custom_emoji_id: str | None = None
+
+
+@dataclass(slots=True)
+class ReplyContext:
+    """Optional ``replyMessage`` shown above the main text.
+
+    Renders as a short coloured stripe with a name + the quoted line —
+    the same chrome Telegram itself uses for replies. Lets the sticker
+    show that "this message was a reply to so-and-so" in one image.
+    """
+
+    name: str
+    text: str
+    entities: list[QuoteEntity] = field(default_factory=list)
+
+
+def _entities_payload(entities: list[QuoteEntity]) -> list[dict[str, object]]:
+    """Convert our QuoteEntity list to the JSON shape the API expects."""
+    out: list[dict[str, object]] = []
+    for ent in entities:
+        item: dict[str, object] = {
+            "type": ent.type,
+            "offset": ent.offset,
+            "length": ent.length,
+        }
+        if ent.url:
+            item["url"] = ent.url
+        if ent.custom_emoji_id:
+            item["custom_emoji_id"] = ent.custom_emoji_id
+        out.append(item)
+    return out
 
 
 class QuoteStickerClient:
@@ -59,9 +113,17 @@ class QuoteStickerClient:
         author: QuoteAuthor,
         text: str,
         *,
+        entities: list[QuoteEntity] | None = None,
+        reply: ReplyContext | None = None,
         background: str = DEFAULT_BACKGROUND,
     ) -> bytes | None:
-        """Render a single-message quote sticker. Returns WebP bytes or None."""
+        """Render a single-message quote sticker. Returns WebP bytes or None.
+
+        ``entities`` preserves bold/italic/code/etc. styling from the
+        original message so the rendered sticker matches what users see
+        in chat. ``reply`` adds the small "in reply to" stripe above
+        the main text when the quoted message was itself a reply.
+        """
         if not text.strip():
             return None
         snippet = text[:MAX_TEXT_LEN]
@@ -71,18 +133,29 @@ class QuoteStickerClient:
         }
         if author.username:
             from_field["username"] = author.username
+        if author.photo_data_url:
+            from_field["photo"] = {"url": author.photo_data_url}
+        message: dict[str, object] = {
+            "entities": _entities_payload(entities or []),
+            "avatar": True,
+            "from": from_field,
+            "text": snippet,
+        }
+        if reply is not None:
+            message["replyMessage"] = {
+                "name": reply.name,
+                "text": reply.text[:MAX_TEXT_LEN],
+                "entities": _entities_payload(reply.entities),
+            }
         payload: dict[str, object] = {
             "type": "quote",
             "format": "webp",
             "backgroundColor": background,
-            "messages": [
-                {
-                    "entities": [],
-                    "avatar": True,
-                    "from": from_field,
-                    "text": snippet,
-                }
-            ],
+            # Crisper output without ballooning the WebP — the API
+            # supports up to 20×, but 3× is the sweet spot for stickers
+            # at Telegram's display sizes.
+            "scale": 3,
+            "messages": [message],
         }
         try:
             resp = await self._client.post(API_URL, json=payload)
