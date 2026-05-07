@@ -872,7 +872,8 @@ async def test_cmd_market_includes_fear_greed_when_available() -> None:
     """``/market`` sends the Fear & Greed dial as a photo with the body in
     the caption when the index reading is available.
     """
-    from zeenova_bot.fear_greed import IMAGE_URL as FNG_IMAGE_URL
+    import io as _io
+
     from zeenova_bot.fear_greed import FearGreed
     from zeenova_bot.handlers import cmd_market
 
@@ -889,7 +890,11 @@ async def test_cmd_market_includes_fear_greed_when_available() -> None:
     msg.reply_photo.assert_called_once()
     msg.reply_text.assert_not_called()  # Photo path, not text.
     _args, kwargs = msg.reply_photo.call_args
-    assert kwargs["photo"] == FNG_IMAGE_URL
+    # Dial is rendered in-process; we get a BytesIO holding the PNG.
+    photo = kwargs["photo"]
+    assert isinstance(photo, _io.BytesIO)
+    payload = photo.getvalue()
+    assert payload[:8] == b"\x89PNG\r\n\x1a\n"
     caption = kwargs["caption"]
     assert "Fear &amp; Greed" in caption  # HTML-escaped &
     assert "72/100" in caption

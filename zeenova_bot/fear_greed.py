@@ -1,32 +1,42 @@
-"""Crypto Fear & Greed Index client (alternative.me).
+"""Crypto Fear & Greed Index client (CoinMarketCap).
 
-A tiny, key-less client for the canonical Crypto Fear & Greed Index
-hosted at https://api.alternative.me/fng/. The same numbers power
-TradingView's widget and most aggregator dashboards.
+A tiny, key-less client for the CMC Crypto Fear & Greed Index served at
+``api.coinmarketcap.com/data-api/v3/fear-greed/chart``. This is the same
+index Binance Square embeds on its app, so the value reported by
+``/market`` lines up with what most users see on their other tools.
 
-The index is refreshed once per day (UTC), so we cache it for 5
-minutes by default — short enough to pick up the daily roll-over
-quickly, long enough to make ``/market`` essentially free.
+The dial PNG that goes with the value is rendered in-process by
+:func:`render_dial` so the picture and the number are guaranteed to
+agree (no race between a remote image and the API value).
+
+The index is refreshed once per day, so we cache the last reading for
+five minutes — short enough to pick up the daily roll-over quickly,
+long enough to keep ``/market`` essentially free.
 """
 
 from __future__ import annotations
 
+import io
 import logging
+import math
+import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 import httpx
 from cachetools import TTLCache
+from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://api.alternative.me"
-
-# Static dial image alternative.me publish for embedding. The PNG is
-# refreshed daily and always reflects the current index value, so we
-# can hand the URL straight to Telegram instead of fetching + uploading
-# the bytes ourselves.
-IMAGE_URL = "https://alternative.me/crypto/fear-and-greed-index.png"
+# CoinMarketCap's data-api host. No key required for this endpoint, but
+# we set a browser-y User-Agent so the WAF doesn't 403 us.
+BASE_URL: Final[str] = "https://api.coinmarketcap.com"
+_CHART_PATH: Final[str] = "/data-api/v3/fear-greed/chart"
+_USER_AGENT: Final[str] = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
 
 
 @dataclass(slots=True)
@@ -38,10 +48,14 @@ class FearGreed:
 
 
 class FearGreedClient:
-    """Read-only client for alternative.me's Fear & Greed Index."""
+    """Read-only client for CoinMarketCap's Fear & Greed Index."""
 
     def __init__(self, timeout: float = 10.0, cache_ttl_s: float = 300.0) -> None:
-        self._client = httpx.AsyncClient(base_url=BASE_URL, timeout=timeout)
+        self._client = httpx.AsyncClient(
+            base_url=BASE_URL,
+            timeout=timeout,
+            headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
+        )
         # Single-row cache (the index has exactly one current value).
         self._cache: TTLCache[str, FearGreed | None] = TTLCache(
             maxsize=1, ttl=cache_ttl_s
@@ -55,8 +69,15 @@ class FearGreedClient:
         cached = self._cache.get("_", _MISSING)
         if cached is not _MISSING:
             return cached  # type: ignore[return-value]
+        # Pull the last two days; CMC publishes one row per day, plus an
+        # intraday "now" row, so two days is enough to always include
+        # the most recent reading.
+        end = int(time.time())
+        start = end - 86400 * 2
         try:
-            resp = await self._client.get("/fng/", params={"limit": 1})
+            resp = await self._client.get(
+                _CHART_PATH, params={"start": start, "end": end}
+            )
             resp.raise_for_status()
             payload = resp.json()
         except (httpx.HTTPError, ValueError) as exc:
@@ -73,23 +94,30 @@ _MISSING: object = object()
 
 
 def _parse(payload: Any) -> FearGreed | None:
-    """Pull the latest reading out of a /fng/ response.
+    """Pull the latest reading out of a CMC fear-greed/chart response.
 
-    The response shape is ``{"data": [{"value": "55",
-    "value_classification": "Greed", ...}], "metadata": {...}}``.
+    The response shape is::
+
+        {"data": {"dataList": [
+            {"score": 47, "name": "Neutral", "timestamp": "...", ...},
+            ...,
+            {"score": 50, "name": "Neutral", "timestamp": "..."}   # <- latest
+        ]}}
     """
     if not isinstance(payload, dict):
         return None
     data = payload.get("data")
-    if not isinstance(data, list) or not data:
+    if not isinstance(data, dict):
         return None
-    row = data[0]
+    rows = data.get("dataList")
+    if not isinstance(rows, list) or not rows:
+        return None
+    row = rows[-1]  # CMC orders ascending by timestamp
     if not isinstance(row, dict):
         return None
-    raw_value = row.get("value")
-    raw_classification = row.get("value_classification")
+    raw_value = row.get("score")
+    raw_classification = row.get("name")
     try:
-        # ``value`` arrives as a string in the public API, but be defensive.
         value = int(float(raw_value))  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
@@ -106,15 +134,184 @@ def _parse(payload: Any) -> FearGreed | None:
 def _classify(value: int) -> str:
     """Bucket a 0..100 score into the standard label.
 
-    Used as a fallback when the API omits ``value_classification``. The
-    cut-offs mirror alternative.me's own buckets.
+    Cut-offs match CMC + Binance Square: 0-24 Extreme Fear, 25-44 Fear,
+    45-54 Neutral, 55-74 Greed, 75-100 Extreme Greed.
     """
     if value <= 24:
         return "Extreme Fear"
-    if value <= 49:
+    if value <= 44:
         return "Fear"
-    if value == 50:
+    if value <= 54:
         return "Neutral"
     if value <= 74:
         return "Greed"
     return "Extreme Greed"
+
+
+# ---------------------------------------------------------------------------
+# Dial renderer
+# ---------------------------------------------------------------------------
+
+# Five-stop gradient tracing the standard Fear & Greed colour scale, the
+# same one Binance Square uses on its app. ``(value_threshold, RGB)``;
+# we linearly interpolate between adjacent stops.
+_GRADIENT: Final[list[tuple[int, tuple[int, int, int]]]] = [
+    (0, (234, 57, 67)),     # Extreme Fear — red
+    (25, (238, 143, 28)),   # Fear — orange
+    (50, (243, 212, 47)),   # Neutral — yellow
+    (75, (147, 217, 0)),    # Greed — light green
+    (100, (22, 199, 132)),  # Extreme Greed — green
+]
+
+
+def _color_for(value: int) -> tuple[int, int, int]:
+    """Linearly interpolate the gradient at ``value``."""
+    v = max(0, min(100, value))
+    for i in range(len(_GRADIENT) - 1):
+        v0, c0 = _GRADIENT[i]
+        v1, c1 = _GRADIENT[i + 1]
+        if v0 <= v <= v1:
+            t = 0.0 if v1 == v0 else (v - v0) / (v1 - v0)
+            return (
+                int(c0[0] + (c1[0] - c0[0]) * t),
+                int(c0[1] + (c1[1] - c0[1]) * t),
+                int(c0[2] + (c1[2] - c0[2]) * t),
+            )
+    return _GRADIENT[-1][1]
+
+
+def _try_load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    """Best-effort load of a bold sans-serif system font."""
+    candidates = (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/Library/Fonts/Arial Bold.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "C:\\Windows\\Fonts\\arialbd.ttf",
+    )
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def render_dial(value: int, classification: str | None = None) -> bytes:
+    """Render a Binance/CMC-style Fear & Greed dial as PNG bytes.
+
+    Always succeeds; ``value`` is clamped to ``[0, 100]`` and the
+    classification text falls back to :func:`_classify` if not provided.
+    """
+    value = max(0, min(100, int(value)))
+    label = (classification or _classify(value)).strip() or _classify(value)
+
+    width, height = 800, 540
+    bg = (15, 17, 21)  # near-black, blends into Telegram's dark theme
+    img = Image.new("RGB", (width, height), bg)
+    draw = ImageDraw.Draw(img)
+
+    # Half-donut geometry. The arc spans 180° → 360° (the top half of a
+    # circle in PIL coordinates). cx/cy is the centre of the *full*
+    # circle; the visible arc lives in the upper half.
+    cx, cy = width // 2, int(height * 0.78)
+    outer_r = 240
+    thickness = 56
+    inner_r = outer_r - thickness
+
+    # Draw the coloured arc as 100 thin segments — that gives a smooth
+    # gradient without needing a real gradient brush.
+    n_segments = 100
+    span = 180.0  # degrees
+    start_deg = 180.0
+    seg_width = span / n_segments
+    for i in range(n_segments):
+        a0 = start_deg + i * seg_width
+        a1 = a0 + seg_width + 0.5  # +0.5 to hide hairline gaps
+        color = _color_for(i + 1)  # 1..100 maps to the gradient
+        draw.pieslice(
+            (cx - outer_r, cy - outer_r, cx + outer_r, cy + outer_r),
+            start=a0,
+            end=a1,
+            fill=color,
+        )
+    # Punch the inner hole so we end up with a ring, not a pie.
+    draw.ellipse(
+        (cx - inner_r, cy - inner_r, cx + inner_r, cy + inner_r),
+        fill=bg,
+    )
+
+    # Pointer triangle, sitting just inside the arc and pointing down at
+    # the current value's position.
+    angle_deg = 180.0 + (value / 100.0) * 180.0
+    angle_rad = math.radians(angle_deg)
+    tip_r = inner_r - 12
+    tip_x = cx + tip_r * math.cos(angle_rad)
+    tip_y = cy + tip_r * math.sin(angle_rad)
+    base_r = tip_r - 28
+    base_cx = cx + base_r * math.cos(angle_rad)
+    base_cy = cy + base_r * math.sin(angle_rad)
+    perp = angle_rad + math.pi / 2
+    half_w = 14
+    base_left = (
+        base_cx + half_w * math.cos(perp),
+        base_cy + half_w * math.sin(perp),
+    )
+    base_right = (
+        base_cx - half_w * math.cos(perp),
+        base_cy - half_w * math.sin(perp),
+    )
+    draw.polygon(
+        [(tip_x, tip_y), base_left, base_right],
+        fill=(220, 220, 220),
+    )
+
+    # Big centred value text + classification label underneath.
+    value_text = str(value)
+    label_text = label
+    value_font = _try_load_font(120)
+    label_font = _try_load_font(40)
+
+    vw, vh = _text_size(draw, value_text, value_font)
+    draw.text(
+        (cx - vw // 2, cy - vh - 8),
+        value_text,
+        font=value_font,
+        fill=(255, 255, 255),
+    )
+    lw, lh = _text_size(draw, label_text, label_font)
+    draw.text(
+        (cx - lw // 2, cy - 4),
+        label_text,
+        font=label_font,
+        fill=_color_for(value),
+    )
+
+    # Title at the top — keeps the image self-explanatory when forwarded.
+    title_font = _try_load_font(36)
+    title = "Fear & Greed Index"
+    tw, _th = _text_size(draw, title, title_font)
+    draw.text(
+        ((width - tw) // 2, 28),
+        title,
+        font=title_font,
+        fill=(200, 200, 200),
+    )
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def _text_size(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+) -> tuple[int, int]:
+    """Return ``(width, height)`` of ``text`` rendered with ``font``.
+
+    Pillow 10 dropped ``draw.textsize``; ``textbbox`` is the supported
+    replacement.
+    """
+    left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+    return int(right - left), int(bottom - top)

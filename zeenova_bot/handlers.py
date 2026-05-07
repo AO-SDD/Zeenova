@@ -37,8 +37,7 @@ from .card import render_price_card
 from .chart import render_candles
 from .coinpaprika import CoinPaprikaClient, GlobalSnapshot, TickerSnapshot
 from .config import Settings
-from .fear_greed import IMAGE_URL as FEAR_GREED_IMAGE_URL
-from .fear_greed import FearGreed, FearGreedClient
+from .fear_greed import FearGreed, FearGreedClient, render_dial
 from .fx import FxClient
 from .quote_sticker import QuoteAuthor, QuoteStickerClient
 from .services import (
@@ -395,15 +394,14 @@ async def cmd_market(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         snap, brand_name=settings.brand_name, fear_greed=fng
     )
     if fng is not None:
-        # alternative.me publishes a fresh dial PNG every day at the same
-        # URL; hand it straight to Telegram so we don't have to fetch /
-        # upload bytes ourselves. The body fits well under the 1024-char
-        # photo-caption limit. Fall back to a plain text reply if Telegram
-        # rejects the photo (e.g. transient CDN hiccup) so /market never
-        # silently disappears.
+        # Render the dial in-process so the picture and the caption value
+        # are guaranteed to agree (no race against a remote daily PNG).
+        # Falls back to a plain text reply if Telegram rejects the
+        # photo for any reason so /market never silently disappears.
         try:
+            dial_png = render_dial(fng.value, fng.classification)
             await msg.reply_photo(
-                photo=FEAR_GREED_IMAGE_URL,
+                photo=io.BytesIO(dial_png),
                 caption=body,
                 parse_mode=ParseMode.HTML,
             )
