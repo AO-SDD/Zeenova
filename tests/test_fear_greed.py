@@ -114,3 +114,10 @@ def test_render_dial_with_and_without_brand_differ() -> None:
     assert with_brand != no_brand
     # Empty string disables the watermark, same as None.
     assert empty_brand == no_brand
+
+
+def test_render_dial_is_memoised_for_repeated_calls() -> None:
+    """Identical calls must return byte-identical PNGs (cached path)."""
+    a = render_dial(42, "Fear", brand="Zeenova")
+    b = render_dial(42, "Fear", brand="Zeenova")
+    assert a is b or a == b

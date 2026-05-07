@@ -20,6 +20,8 @@ from typing import Any
 
 import httpx
 
+from .http import shared_async_client
+
 logger = logging.getLogger(__name__)
 
 BASE_URL = os.environ.get("BINANCE_BASE_URL", "https://data-api.binance.vision")
@@ -27,7 +29,7 @@ BASE_URL = os.environ.get("BINANCE_BASE_URL", "https://data-api.binance.vision")
 
 class BinanceClient:
     def __init__(self, timeout: float = 10.0) -> None:
-        self._client = httpx.AsyncClient(base_url=BASE_URL, timeout=timeout)
+        self._client = shared_async_client(base_url=BASE_URL, timeout=timeout)
         self._pairs: set[str] = set()
         self._pairs_loaded_at: float = 0.0
         self._pairs_lock = asyncio.Lock()
