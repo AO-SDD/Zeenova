@@ -311,24 +311,16 @@ def render_dial(
         fill=(200, 200, 200),
     )
 
-    # Brand watermark in the top-right corner. We use a saturated accent
-    # (the same yellow/green family as the dial's neutral band) so the
-    # name pops without competing with the gauge for attention.
+    # Brand watermark in the bottom-left corner — quiet, no background
+    # pill, sized to feel like a signature rather than competing with
+    # the gauge for attention.
     if brand:
-        brand_font = _try_load_font(28)
+        brand_font = _try_load_font(20)
         bw, bh = _text_size(draw, brand, brand_font)
-        margin = 24
-        bx = width - bw - margin
-        by = margin
-        # Subtle pill background so the name reads cleanly over any
-        # arc colour underneath if the layout ever changes.
-        pad_x, pad_y = 14, 8
-        draw.rounded_rectangle(
-            (bx - pad_x, by - pad_y, bx + bw + pad_x, by + bh + pad_y),
-            radius=12,
-            fill=(28, 30, 36),
-        )
-        draw.text((bx, by), brand, font=brand_font, fill=(243, 212, 47))
+        margin = 18
+        bx = margin
+        by = height - bh - margin
+        draw.text((bx, by), brand, font=brand_font, fill=(120, 128, 138))
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
