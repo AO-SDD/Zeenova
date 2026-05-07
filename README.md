@@ -3,7 +3,7 @@
 Telegram bot that turns any chat into a crypto desk — live prices, charts,
 calculator, conversions, and a market overview, all in one place.
 
-Built for the **Zeenova** community channels:
+Built for the **Zeen** community channels:
 
 - Channel: <https://t.me/ox_zeen>
 - Group:   <https://t.me/blockzeen>
