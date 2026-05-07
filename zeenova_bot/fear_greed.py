@@ -22,6 +22,12 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.alternative.me"
 
+# Static dial image alternative.me publish for embedding. The PNG is
+# refreshed daily and always reflects the current index value, so we
+# can hand the URL straight to Telegram instead of fetching + uploading
+# the bytes ourselves.
+IMAGE_URL = "https://alternative.me/crypto/fear-and-greed-index.png"
+
 
 @dataclass(slots=True)
 class FearGreed:
