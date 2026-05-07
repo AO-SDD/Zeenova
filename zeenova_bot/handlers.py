@@ -19,9 +19,10 @@ from telegram import (
     InputTextMessageContent,
     Update,
 )
-from telegram.constants import ChatType, ParseMode
+from telegram.constants import ChatAction, ChatType, ParseMode
 from telegram.error import BadRequest
 from telegram.ext import (
+    AIORateLimiter,
     Application,
     CallbackQueryHandler,
     CommandHandler,
@@ -80,6 +81,12 @@ _STRONG_CALC_OPS = set("+-*/^")
 # thread-safe. We render charts off the event loop on a single worker thread
 # so concurrent updates serialize safely while still freeing the loop.
 _CHART_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="zeenova-chart")
+
+# PIL is thread-safe for independent images, so the F&G dial can render on a
+# small dedicated pool. A handful of workers are plenty — the result is
+# memoised inside :func:`render_dial`, so under normal load nearly every call
+# is a cache hit anyway.
+_DIAL_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="zeenova-dial")
 
 # Symbols whose USD value we know directly without hitting any feed. Two
 # kinds live here:
@@ -172,10 +179,16 @@ def _help_keyboard(
 def build_application(
     settings: Settings, service: CoinService, fx: FxClient
 ) -> Application:  # type: ignore[type-arg]
+    # AIORateLimiter respects Telegram's per-chat (1 msg/s) and global
+    # (30 msg/s) caps automatically, so a busy group can't trigger a
+    # FloodWait that delays every other chat. ``concurrent_updates`` lets
+    # PTB schedule unrelated messages in parallel rather than serialising
+    # the entire bot through a single coroutine.
     app = (
         Application.builder()
         .token(settings.telegram_bot_token)
         .concurrent_updates(True)
+        .rate_limiter(AIORateLimiter())
         .build()
     )
     app.bot_data["settings"] = settings
@@ -352,7 +365,8 @@ def _render_top(
 async def cmd_market(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Reply with a snapshot of total marketcap, BTC dominance, etc."""
     msg = update.effective_message
-    if msg is None:
+    chat = update.effective_chat
+    if msg is None or chat is None:
         return
     paprika: CoinPaprikaClient | None = context.bot_data.get("paprika")
     fear_greed_client: FearGreedClient | None = context.bot_data.get(
@@ -383,7 +397,13 @@ async def cmd_market(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             logger.exception("/market: fetch_current (fear & greed) failed")
             return None
 
-    snap, fng = await asyncio.gather(_safe_global(), _safe_fng())
+    # Fan out the network calls and the "uploading…" indicator together
+    # so users see immediate feedback while the data loads.
+    snap, fng, _ = await asyncio.gather(
+        _safe_global(),
+        _safe_fng(),
+        _typing(context, chat.id, ChatAction.UPLOAD_PHOTO),
+    )
     if snap is None:
         await msg.reply_text(
             "Couldn't reach the market data feed. Try again in a minute.",
@@ -399,7 +419,7 @@ async def cmd_market(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         # Falls back to a plain text reply if Telegram rejects the
         # photo for any reason so /market never silently disappears.
         try:
-            dial_png = render_dial(
+            dial_png = await _render_dial_async(
                 fng.value, fng.classification, brand=settings.brand_name
             )
             await msg.reply_photo(
@@ -420,7 +440,8 @@ async def cmd_market(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Reply with the day's top gainers and losers from the top-N by mcap."""
     msg = update.effective_message
-    if msg is None:
+    chat = update.effective_chat
+    if msg is None or chat is None:
         return
     paprika: CoinPaprikaClient | None = context.bot_data.get("paprika")
     if paprika is None:
@@ -429,6 +450,7 @@ async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             parse_mode=ParseMode.HTML,
         )
         return
+    await _typing(context, chat.id)
     try:
         rows = await paprika.fetch_top_tickers(_TOP_UNIVERSE)
     except Exception:  # noqa: BLE001
@@ -977,6 +999,10 @@ async def _send_card(
     settings: Settings = context.bot_data["settings"]
     fx: FxClient = context.bot_data["fx"]
 
+    # Show a "uploading photo…" hint immediately so the user knows the
+    # bot received the request, even when upstream feeds are slow.
+    await _typing(context, chat.id, ChatAction.UPLOAD_PHOTO)
+
     ref = await _resolve_for_price_card(service, fx, symbol)
     if ref is None:
         if notify_if_unknown:
@@ -1078,6 +1104,30 @@ async def _render_candles_async(
         brand_name=brand_name,
     )
     return await loop.run_in_executor(_CHART_EXECUTOR, func)
+
+
+async def _render_dial_async(
+    value: int, classification: str | None, *, brand: str | None
+) -> bytes:
+    """Render the F&G dial off the event loop. Cache hits are still cheap
+    and stay in-process; cache misses (rare) get pushed to the dial
+    executor so the loop never blocks on PIL's bytestream encoding.
+    """
+    loop = asyncio.get_running_loop()
+    func = partial(render_dial, value, classification, brand=brand)
+    return await loop.run_in_executor(_DIAL_EXECUTOR, func)
+
+
+async def _typing(
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, action: str = ChatAction.TYPING
+) -> None:
+    """Best-effort 'typing/uploading…' indicator. Failures are swallowed —
+    the indicator is purely a UX nicety and must never block the real reply.
+    """
+    try:
+        await context.bot.send_chat_action(chat_id=chat_id, action=action)
+    except Exception:  # noqa: BLE001
+        logger.debug("send_chat_action failed", exc_info=True)
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:

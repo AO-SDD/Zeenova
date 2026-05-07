@@ -18,6 +18,8 @@ from typing import Any
 import httpx
 from cachetools import TTLCache
 
+from .http import shared_async_client
+
 logger = logging.getLogger(__name__)
 
 # These return the same JSON; we just need a fallback if the primary CDN
@@ -40,7 +42,7 @@ class FxClient:
         cache_ttl_s: int = 3600,
         http_timeout_s: float = 6.0,
     ) -> None:
-        self._client = httpx.AsyncClient(timeout=http_timeout_s)
+        self._client = shared_async_client(timeout=http_timeout_s)
         # One TTLCache slot per "from" currency. The payload itself is a
         # dict of ~200 entries, so 64 slots ≈ 64 × 200 = 12 800 cached rates.
         self._cache: TTLCache[str, dict[str, float]] = TTLCache(

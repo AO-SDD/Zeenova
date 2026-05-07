@@ -18,6 +18,8 @@ from typing import Any
 import httpx
 from cachetools import TTLCache
 
+from .http import shared_async_client
+
 logger = logging.getLogger(__name__)
 
 PUBLIC_BASE = "https://api.coingecko.com/api/v3"
@@ -47,7 +49,7 @@ class MarketcapClient:
         headers: dict[str, str] = {"accept": "application/json"}
         if self._api_key:
             headers["x-cg-pro-api-key"] = self._api_key
-        self._client = httpx.AsyncClient(base_url=base, headers=headers, timeout=timeout)
+        self._client = shared_async_client(base_url=base, headers=headers, timeout=timeout)
 
         # symbol (uppercase) -> marketcap_usd
         self._cache: TTLCache[str, float | None] = TTLCache(

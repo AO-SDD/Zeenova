@@ -18,6 +18,8 @@ from typing import Final
 
 import httpx
 
+from .http import shared_async_client
+
 logger = logging.getLogger(__name__)
 
 API_URL: Final[str] = "https://bot.lyo.su/quote/generate"
@@ -49,7 +51,7 @@ class QuoteStickerClient:
         client: httpx.AsyncClient | None = None,
         timeout: float = 15.0,
     ) -> None:
-        self._client = client or httpx.AsyncClient(timeout=timeout)
+        self._client = client or shared_async_client(timeout=timeout)
         self._owns_client = client is None
 
     async def render(

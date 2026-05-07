@@ -27,6 +27,8 @@ import httpx
 from cachetools import TTLCache
 from PIL import Image, ImageDraw, ImageFont
 
+from .http import shared_async_client
+
 logger = logging.getLogger(__name__)
 
 # CoinMarketCap's data-api host. No key required for this endpoint, but
@@ -51,7 +53,7 @@ class FearGreedClient:
     """Read-only client for CoinMarketCap's Fear & Greed Index."""
 
     def __init__(self, timeout: float = 10.0, cache_ttl_s: float = 300.0) -> None:
-        self._client = httpx.AsyncClient(
+        self._client = shared_async_client(
             base_url=BASE_URL,
             timeout=timeout,
             headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
@@ -197,6 +199,11 @@ def _try_load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
+_DIAL_CACHE_SIZE: Final[int] = 128
+_dial_cache: dict[tuple[int, str, str], bytes] = {}
+_dial_cache_order: list[tuple[int, str, str]] = []
+
+
 def render_dial(
     value: int,
     classification: str | None = None,
@@ -209,9 +216,18 @@ def render_dial(
     classification text falls back to :func:`_classify` if not provided.
     ``brand`` is shown as a watermark in the top-right corner; pass
     ``None`` or an empty string to disable.
+
+    Output is memoised on ``(value, classification, brand)``; the
+    Fear & Greed reading only changes every few minutes, so subsequent
+    /market calls reuse the cached PNG bytes instead of paying ~50 ms
+    of PIL rendering each time.
     """
     value = max(0, min(100, int(value)))
     label = (classification or _classify(value)).strip() or _classify(value)
+    cache_key = (value, label, brand or "")
+    cached = _dial_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     width, height = 800, 540
     bg = (15, 17, 21)  # near-black, blends into Telegram's dark theme
@@ -324,7 +340,13 @@ def render_dial(
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
-    return buf.getvalue()
+    png = buf.getvalue()
+    _dial_cache[cache_key] = png
+    _dial_cache_order.append(cache_key)
+    while len(_dial_cache_order) > _DIAL_CACHE_SIZE:
+        evicted = _dial_cache_order.pop(0)
+        _dial_cache.pop(evicted, None)
+    return png
 
 
 def _text_size(

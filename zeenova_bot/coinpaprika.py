@@ -35,6 +35,7 @@ from typing import Any
 import httpx
 from cachetools import TTLCache
 
+from .http import shared_async_client
 from .services import PriceSnapshot
 
 logger = logging.getLogger(__name__)
@@ -80,7 +81,7 @@ class CoinPaprikaClient:
         global_ttl_s: float = 60.0,
         top_tickers_ttl_s: float = 60.0,
     ) -> None:
-        self._client = httpx.AsyncClient(base_url=BASE_URL, timeout=timeout)
+        self._client = shared_async_client(base_url=BASE_URL, timeout=timeout)
         self._cap_cache: TTLCache[str, float | None] = TTLCache(
             maxsize=4096, ttl=cache_ttl_s
         )
