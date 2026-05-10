@@ -452,6 +452,7 @@ async def cmd_market(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                 photo=io.BytesIO(dial_png),
                 caption=body,
                 parse_mode=ParseMode.HTML,
+                reply_markup=_brand_keyboard(settings),
             )
             return
         except Exception:  # noqa: BLE001
@@ -460,6 +461,7 @@ async def cmd_market(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         body,
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
+        reply_markup=_brand_keyboard(settings),
     )
 
 
@@ -493,10 +495,12 @@ async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     by_change = sorted(rows, key=lambda t: t.change_pct_24h)
     losers = by_change[:_TOP_N]
     gainers = list(reversed(by_change[-_TOP_N:]))
+    settings: Settings = context.bot_data["settings"]
     await msg.reply_text(
         _render_top(gainers, losers, universe=_TOP_UNIVERSE),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
+        reply_markup=_brand_keyboard(settings),
     )
 
 
@@ -552,6 +556,7 @@ async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         _render_news(articles, settings.brand_name),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
+        reply_markup=_brand_keyboard(settings),
     )
 
 
@@ -1005,14 +1010,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         timeframe=tf,
         brand_name=settings.brand_name,
     )
-    caption = render_price_card(
-        md,
-        channel_name=settings.channel_name,
-        channel_url=settings.telegram_channel_url,
-        group_name=settings.group_name,
-        group_url=settings.telegram_group_url,
-    )
-    keyboard = _build_keyboard(ref=ref, active=tf)
+    caption = render_price_card(md)
+    keyboard = _build_keyboard(ref=ref, active=tf, settings=settings)
     try:
         await query.edit_message_media(
             media=InputMediaPhoto(
@@ -1147,13 +1146,7 @@ async def on_inline_query(
         await iq.answer([], cache_time=_INLINE_CACHE_SECONDS, is_personal=False)
         return
 
-    body = render_price_card(
-        md,
-        channel_name=settings.channel_name,
-        channel_url=settings.telegram_channel_url,
-        group_name=settings.group_name,
-        group_url=settings.telegram_group_url,
-    )
+    body = render_price_card(md)
     result = InlineQueryResultArticle(
         # Stable per (symbol, source) so Telegram dedups multiple users
         # picking the same suggestion within the cache window.
@@ -1165,6 +1158,7 @@ async def on_inline_query(
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
         ),
+        reply_markup=_brand_keyboard(settings),
     )
     await iq.answer(
         [result], cache_time=_INLINE_CACHE_SECONDS, is_personal=False
@@ -1212,17 +1206,12 @@ async def _send_card(
                 parse_mode=ParseMode.HTML,
             )
             return
-        caption = render_price_card(
-            md,
-            channel_name=settings.channel_name,
-            channel_url=settings.telegram_channel_url,
-            group_name=settings.group_name,
-            group_url=settings.telegram_group_url,
-        )
+        caption = render_price_card(md)
         await msg.reply_text(
             caption,
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
+            reply_markup=_brand_keyboard(settings),
         )
         return
 
@@ -1244,14 +1233,8 @@ async def _send_card(
         timeframe=timeframe,
         brand_name=settings.brand_name,
     )
-    caption = render_price_card(
-        md,
-        channel_name=settings.channel_name,
-        channel_url=settings.telegram_channel_url,
-        group_name=settings.group_name,
-        group_url=settings.telegram_group_url,
-    )
-    keyboard = _build_keyboard(ref=ref, active=timeframe)
+    caption = render_price_card(md)
+    keyboard = _build_keyboard(ref=ref, active=timeframe, settings=settings)
     await context.bot.send_photo(
         chat_id=chat.id,
         photo=png,
@@ -1262,7 +1245,30 @@ async def _send_card(
     )
 
 
-def _build_keyboard(*, ref: CoinRef, active: Timeframe) -> InlineKeyboardMarkup:
+def _brand_buttons(settings: Settings) -> list[InlineKeyboardButton]:
+    """Two URL buttons that surface the brand's channel and chat shortcuts.
+
+    Returned as a flat list so callers can compose them with their own
+    rows (e.g. timeframe buttons above brand buttons on price cards).
+    """
+    return [
+        InlineKeyboardButton(
+            f"📣 {settings.channel_name}", url=settings.telegram_channel_url
+        ),
+        InlineKeyboardButton(
+            f"💬 {settings.group_name}", url=settings.telegram_group_url
+        ),
+    ]
+
+
+def _brand_keyboard(settings: Settings) -> InlineKeyboardMarkup:
+    """Standalone brand keyboard for messages without their own buttons."""
+    return InlineKeyboardMarkup([_brand_buttons(settings)])
+
+
+def _build_keyboard(
+    *, ref: CoinRef, active: Timeframe, settings: Settings
+) -> InlineKeyboardMarkup:
     row: list[InlineKeyboardButton] = []
     for tf in TIMEFRAMES:
         label = f"✅ {tf.label}" if tf.code == active.code else tf.label
@@ -1271,7 +1277,10 @@ def _build_keyboard(*, ref: CoinRef, active: Timeframe) -> InlineKeyboardMarkup:
                 label, callback_data=f"tf:{tf.code}:{ref.source}:{ref.symbol}"
             )
         )
-    return InlineKeyboardMarkup([row])
+    # Timeframe row on top, brand row underneath, so the most-used
+    # interaction (switching timeframe) stays the first thing the user's
+    # thumb lands on.
+    return InlineKeyboardMarkup([row, _brand_buttons(settings)])
 
 
 async def _render_candles_async(

@@ -1255,3 +1255,95 @@ async def test_cmd_news_handles_client_exception() -> None:
     await cmd_news(update, context)
     body = _last_reply(update.effective_message)
     assert "Couldn't load" in body
+
+
+# ---------------------------------------------------------------------------
+# Brand keyboard — channel + chat URL buttons attached to command replies
+# ---------------------------------------------------------------------------
+
+
+def _last_reply_kwargs(msg: MagicMock) -> dict[str, object]:
+    """Return the kwargs of the last reply_text / reply_photo call."""
+    call = msg.reply_text.call_args or msg.reply_photo.call_args
+    assert call is not None
+    return dict(call.kwargs)
+
+
+def _assert_brand_keyboard(markup: object) -> None:
+    """Assert ``markup`` is an InlineKeyboardMarkup whose last row has
+    a 📣 Channel button and a 💬 Chat button with the configured URLs."""
+    from telegram import InlineKeyboardMarkup
+
+    assert isinstance(markup, InlineKeyboardMarkup)
+    rows = list(markup.inline_keyboard)
+    brand_row = rows[-1]
+    assert len(brand_row) == 2
+    channel_btn, chat_btn = brand_row
+    assert "Zeen Channel" in channel_btn.text
+    assert channel_btn.url == "https://t.me/ox_zeen"
+    assert "Zeen Chat" in chat_btn.text
+    assert chat_btn.url == "https://t.me/blockzeen"
+
+
+@pytest.mark.asyncio
+async def test_cmd_market_attaches_brand_buttons() -> None:
+    """``/market`` reply carries the channel + chat shortcut buttons."""
+    from zeenova_bot.coinpaprika import GlobalSnapshot
+    from zeenova_bot.handlers import cmd_market
+
+    paprika = MagicMock()
+    paprika.fetch_global = AsyncMock(
+        return_value=GlobalSnapshot(
+            market_cap_usd=3.2e12,
+            volume_24h_usd=8.5e10,
+            bitcoin_dominance_pct=53.1,
+            cryptocurrencies_number=12_345,
+            market_cap_change_24h_pct=1.5,
+        )
+    )
+    update, context = _cmd_update_context(paprika=paprika)
+    await cmd_market(update, context)
+    kwargs = _last_reply_kwargs(update.effective_message)
+    _assert_brand_keyboard(kwargs.get("reply_markup"))
+
+
+@pytest.mark.asyncio
+async def test_cmd_top_attaches_brand_buttons() -> None:
+    """``/top`` reply carries the channel + chat shortcut buttons."""
+    from zeenova_bot.coinpaprika import TickerSnapshot
+    from zeenova_bot.handlers import cmd_top
+
+    rows = [
+        TickerSnapshot(
+            symbol=f"C{i}",
+            name=f"Coin{i}",
+            rank=i + 10,
+            price_usd=1.0,
+            change_pct_24h=float(i),
+            market_cap_usd=1e9,
+        )
+        for i in range(-5, 6)
+    ]
+    paprika = MagicMock()
+    paprika.fetch_top_tickers = AsyncMock(return_value=rows)
+    update, context = _cmd_update_context(paprika=paprika)
+    await cmd_top(update, context)
+    kwargs = _last_reply_kwargs(update.effective_message)
+    _assert_brand_keyboard(kwargs.get("reply_markup"))
+
+
+@pytest.mark.asyncio
+async def test_cmd_news_attaches_brand_buttons() -> None:
+    """``/news`` reply carries the channel + chat shortcut buttons."""
+    from zeenova_bot.handlers import cmd_news
+
+    news = MagicMock()
+    news.fetch_latest = AsyncMock(
+        return_value=[
+            _news_article("Story", "https://x.com/a", "CoinDesk"),
+        ]
+    )
+    update, context = _news_update_context(news)
+    await cmd_news(update, context)
+    kwargs = _last_reply_kwargs(update.effective_message)
+    _assert_brand_keyboard(kwargs.get("reply_markup"))
