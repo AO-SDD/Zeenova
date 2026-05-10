@@ -6,6 +6,7 @@ import asyncio
 import logging
 import sys
 
+from telegram import BotCommand
 from telegram.ext import Application
 
 from .binance import BinanceClient
@@ -21,6 +22,18 @@ from .mexc import MexcClient
 from .news import NewsClient
 from .quote_sticker import QuoteStickerClient
 from .services import CoinService
+
+# Slash-command menu published to Telegram on startup. Telegram shows
+# these in the autocomplete drawer when users type ``/`` and in the
+# attach-menu button next to the input field. Keep descriptions short
+# (Telegram caps them at 256 chars but truncates much earlier in the UI).
+_BOT_COMMANDS: tuple[BotCommand, ...] = (
+    BotCommand("p", "Price card for a coin (e.g. /p btc)"),
+    BotCommand("market", "Global marketcap, BTC dominance, Fear & Greed"),
+    BotCommand("top", "Today's top gainers and losers"),
+    BotCommand("news", "Latest crypto headlines"),
+    BotCommand("help", "How to use the bot"),
+)
 
 
 def _configure_logging(level: str) -> None:
@@ -71,7 +84,14 @@ def main() -> None:
     # public RSS feeds and dedupes them client-side.
     app.bot_data["news"] = news
 
-    async def _post_init(_: Application) -> None:  # type: ignore[type-arg]
+    async def _post_init(application: Application) -> None:  # type: ignore[type-arg]
+        # Publish the slash-command menu so Telegram's native autocomplete
+        # surfaces our commands when users type ``/`` in a chat.
+        try:
+            await application.bot.set_my_commands(_BOT_COMMANDS)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("set_my_commands failed: %s", exc)
+
         # Warm Binance + MEXC pair caches so the first user click doesn't
         # pay the ~1-2 s ``exchangeInfo`` round-trip. Bybit is allowed to
         # fail (it's geo-blocked from this region) — its client logs the

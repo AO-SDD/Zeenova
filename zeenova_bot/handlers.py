@@ -71,7 +71,9 @@ logger = logging.getLogger(__name__)
 
 # Free-text symbols are short alphanumeric tokens. Anything with spaces or
 # punctuation is ignored to keep group chatter from triggering the bot.
-_SYMBOL_RE = re.compile(r"^\$?([A-Za-z][A-Za-z0-9]{1,11})$")
+# Single-letter symbols are allowed (e.g. ``S`` for Sonic, ``H`` for Hivemapper)
+# — a one-letter message in chat is a deliberate lookup intent, not noise.
+_SYMBOL_RE = re.compile(r"^\$?([A-Za-z][A-Za-z0-9]{0,11})$")
 
 # Quote-sticker trigger: a one-character reply of "z" / "Z" turns the
 # message we're replying to into a quote sticker. Matches QuotLyBot's
