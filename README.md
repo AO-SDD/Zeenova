@@ -35,6 +35,9 @@ Built for the **Zeen** community channels:
   same index Binance Square uses).
 - `/top` — the day's biggest gainers and losers from the top 100 by
   marketcap.
+- `/news` — latest English-language crypto headlines aggregated from
+  CoinDesk, Cointelegraph, and Decrypt via their public RSS feeds (no
+  API key required). Deduplicated by URL and cached for 5 minutes.
 
 ### Calculator & conversions
 - Plain math with full operator precedence: `2+3*4`, `(1+2)*3`, `2^10`,
@@ -150,6 +153,7 @@ zeenova_bot/
 ├── marketcap.py     # CoinPaprika → CoinGecko marketcap aggregator
 │
 ├── fear_greed.py    # CMC Fear & Greed client + local PIL dial renderer (cached)
+├── news.py          # RSS news aggregator (CoinDesk, Cointelegraph, Decrypt)
 ├── fx.py            # Worldwide fiat + crypto conversion (cached)
 ├── calc.py          # Calculator: precedence, suffixes, %, conversions
 ├── quote_sticker.py # bot.lyo.su client for `z`-reply quote stickers

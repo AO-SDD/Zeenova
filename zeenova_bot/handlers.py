@@ -46,6 +46,7 @@ from .coinpaprika import CoinPaprikaClient, GlobalSnapshot, TickerSnapshot
 from .config import Settings
 from .fear_greed import FearGreed, FearGreedClient, render_dial
 from .fx import FxClient
+from .news import NewsArticle, NewsClient
 from .quote_sticker import (
     QuoteAuthor,
     QuoteEntity,
@@ -141,7 +142,9 @@ def _help_text(settings: Settings) -> str:
         "• <code>/market</code> — total marketcap, 24h volume, BTC "
         "dominance, and the active coin count.\n"
         "• <code>/top</code> — the day's biggest gainers and losers from "
-        "the top 100 coins by marketcap.\n\n"
+        "the top 100 coins by marketcap.\n"
+        "• <code>/news</code> — latest crypto headlines from major "
+        "outlets (CoinDesk, Cointelegraph, Decrypt).\n\n"
         "<b>🧮 Calculator &amp; conversion</b>\n"
         "• Plain math with full operator precedence — "
         "<code>2+2/4</code>, <code>(1+2)*3</code>, <code>2^10</code>, "
@@ -219,6 +222,7 @@ def build_application(
     app.add_handler(CommandHandler(["p", "price"], cmd_price))
     app.add_handler(CommandHandler(["top", "movers"], cmd_top))
     app.add_handler(CommandHandler(["market", "global"], cmd_market))
+    app.add_handler(CommandHandler(["news"], cmd_news))
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & ~filters.UpdateType.EDITED, on_text
@@ -489,6 +493,61 @@ async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     gainers = list(reversed(by_change[-_TOP_N:]))
     await msg.reply_text(
         _render_top(gainers, losers, universe=_TOP_UNIVERSE),
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
+
+
+# How many headlines /news surfaces by default. Telegram's message body
+# stays comfortably under the 4096-char cap at this size and the user
+# isn't drowned in low-signal articles.
+_NEWS_LIMIT: Final[int] = 6
+
+
+def _render_news(articles: list[NewsArticle], brand_name: str) -> str:
+    """HTML body for ``/news`` — a compact, link-rich headline digest."""
+    lines = [f"<b>📰 {escape(brand_name)} — latest crypto news</b>", ""]
+    for art in articles:
+        title = escape(art.title)
+        # Each item is a single line: the title is the clickable link
+        # and the source is shown in muted italic right after.
+        lines.append(
+            f'• <a href="{escape(art.url)}">{title}</a>  '
+            f"<i>— {escape(art.source)}</i>"
+        )
+    lines.append("")
+    lines.append("<i>Sources: CoinDesk · Cointelegraph · Decrypt</i>")
+    return "\n".join(lines)
+
+
+async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reply with the latest crypto headlines from major outlets."""
+    msg = update.effective_message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
+    news: NewsClient | None = context.bot_data.get("news")
+    if news is None:
+        await msg.reply_text(
+            "News feed is unavailable right now.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    await _typing(context, chat.id)
+    try:
+        articles = await news.fetch_latest(limit=_NEWS_LIMIT)
+    except Exception:  # noqa: BLE001
+        logger.exception("/news: fetch_latest failed")
+        articles = []
+    if not articles:
+        await msg.reply_text(
+            "Couldn't load the news feed right now. Try again in a minute.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    settings: Settings = context.bot_data["settings"]
+    await msg.reply_text(
+        _render_news(articles, settings.brand_name),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
