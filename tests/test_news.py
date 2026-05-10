@@ -222,3 +222,29 @@ def test_news_article_dataclass_round_trip() -> None:
     )
     assert art.title == "t"
     assert art.source == "s"
+
+
+# ---------------------------------------------------------------------------
+# Symbol regex — confirm single-letter symbols are now allowed
+# ---------------------------------------------------------------------------
+
+
+def test_symbol_regex_accepts_single_letter_symbol() -> None:
+    """Bare-symbol matching accepts 1-char tickers (S, H, …)."""
+    from zeenova_bot.handlers import _SYMBOL_RE
+
+    assert _SYMBOL_RE.match("s") is not None
+    assert _SYMBOL_RE.match("H") is not None
+    assert _SYMBOL_RE.match("$s") is not None
+
+
+def test_symbol_regex_still_rejects_non_symbol_text() -> None:
+    """A loose regex must not eat punctuation, spaces, or digits-first tokens."""
+    from zeenova_bot.handlers import _SYMBOL_RE
+
+    assert _SYMBOL_RE.match("") is None
+    assert _SYMBOL_RE.match("1") is None  # digit-first not a ticker
+    assert _SYMBOL_RE.match("btc!") is None
+    assert _SYMBOL_RE.match("btc usd") is None
+    # Max length is 12 chars including the leading letter.
+    assert _SYMBOL_RE.match("a" * 13) is None
