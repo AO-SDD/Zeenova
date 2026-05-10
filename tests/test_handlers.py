@@ -1176,3 +1176,82 @@ async def test_quote_trigger_falls_back_when_quote_text_blank() -> None:
     args, _ = client.render.call_args
     _author, text = args
     assert text == "Whole parent body"
+
+
+# ---------------------------------------------------------------------------
+# /news
+# ---------------------------------------------------------------------------
+
+
+def _news_article(title: str, url: str, source: str = "CoinDesk") -> object:
+    from datetime import UTC, datetime
+
+    from zeenova_bot.news import NewsArticle
+
+    return NewsArticle(
+        title=title,
+        url=url,
+        source=source,
+        published_at=datetime(2026, 5, 10, 12, 0, tzinfo=UTC),
+    )
+
+
+def _news_update_context(news: object) -> tuple[MagicMock, MagicMock]:
+    msg = MagicMock()
+    msg.reply_text = AsyncMock()
+    update = MagicMock()
+    update.effective_message = msg
+    update.effective_chat = MagicMock()
+    context = MagicMock()
+    context.bot_data = {"news": news, "settings": _settings()}
+    return update, context
+
+
+@pytest.mark.asyncio
+async def test_cmd_news_renders_headlines_as_html_links() -> None:
+    """``/news`` lists articles as clickable links with their source."""
+    from zeenova_bot.handlers import cmd_news
+
+    news = MagicMock()
+    news.fetch_latest = AsyncMock(
+        return_value=[
+            _news_article("Bitcoin holds $80K", "https://x.com/btc", "CoinDesk"),
+            _news_article(
+                "Ethereum down 35%", "https://x.com/eth", "Cointelegraph"
+            ),
+        ]
+    )
+    update, context = _news_update_context(news)
+    await cmd_news(update, context)
+    body = _last_reply(update.effective_message)
+    assert "latest crypto news" in body
+    assert 'href="https://x.com/btc"' in body
+    assert "Bitcoin holds $80K" in body
+    assert "CoinDesk" in body
+    assert "Ethereum down 35%" in body
+
+
+@pytest.mark.asyncio
+async def test_cmd_news_handles_empty_feed_gracefully() -> None:
+    """An empty news result surfaces as a friendly error, not a crash."""
+    from zeenova_bot.handlers import cmd_news
+
+    news = MagicMock()
+    news.fetch_latest = AsyncMock(return_value=[])
+    update, context = _news_update_context(news)
+    await cmd_news(update, context)
+    body = _last_reply(update.effective_message)
+    assert "Couldn't load" in body
+
+
+@pytest.mark.asyncio
+async def test_cmd_news_handles_client_exception() -> None:
+    """If the client raises, /news still replies with a friendly error."""
+    from zeenova_bot.handlers import cmd_news
+
+    news = MagicMock()
+    news.fetch_latest = AsyncMock(side_effect=RuntimeError("boom"))
+    update, context = _news_update_context(news)
+    await cmd_news(update, context)
+    body = _last_reply(update.effective_message)
+    assert "Couldn't load" in body

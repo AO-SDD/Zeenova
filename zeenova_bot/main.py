@@ -18,6 +18,7 @@ from .fx import FxClient
 from .handlers import build_application
 from .marketcap import MarketcapAggregator
 from .mexc import MexcClient
+from .news import NewsClient
 from .quote_sticker import QuoteStickerClient
 from .services import CoinService
 
@@ -55,6 +56,7 @@ def main() -> None:
     fx = FxClient()
     fear_greed = FearGreedClient()
     quote_sticker = QuoteStickerClient()
+    news = NewsClient()
 
     app = build_application(settings, service, fx)
     # /top and /market need the raw CoinPaprika client (the rest of the
@@ -65,6 +67,9 @@ def main() -> None:
     # Reply-with-"z" turns the parent message into a quote sticker via
     # bot.lyo.su.
     app.bot_data["quote_sticker"] = quote_sticker
+    # /news pulls latest headlines from a few mainstream crypto outlets'
+    # public RSS feeds and dedupes them client-side.
+    app.bot_data["news"] = news
 
     async def _post_init(_: Application) -> None:  # type: ignore[type-arg]
         # Warm Binance + MEXC pair caches so the first user click doesn't
@@ -88,6 +93,7 @@ def main() -> None:
         await fx.aclose()
         await fear_greed.aclose()
         await quote_sticker.aclose()
+        await news.aclose()
 
     # PTB v21 exposes ``post_init`` / ``post_shutdown`` as configurable hooks.
     app.post_init = _post_init
