@@ -1271,7 +1271,9 @@ def _last_reply_kwargs(msg: MagicMock) -> dict[str, object]:
 
 def _assert_brand_keyboard(markup: object) -> None:
     """Assert ``markup`` is an InlineKeyboardMarkup whose last row has
-    a 📣 Channel button and a 💬 Chat button with the configured URLs."""
+    a 📣 Channel button and a 💬 Chat button with the configured URLs,
+    each carrying the ``style="success"`` hint so modern Telegram
+    clients render them green."""
     from telegram import InlineKeyboardMarkup
 
     assert isinstance(markup, InlineKeyboardMarkup)
@@ -1283,6 +1285,10 @@ def _assert_brand_keyboard(markup: object) -> None:
     assert channel_btn.url == "https://t.me/ox_zeen"
     assert "Zeen Chat" in chat_btn.text
     assert chat_btn.url == "https://t.me/blockzeen"
+    # The Bot API 9.4 "style" hint travels via api_kwargs in PTB 21.x,
+    # so it has to land in the serialised JSON for the server to see it.
+    assert channel_btn.to_dict().get("style") == "success"
+    assert chat_btn.to_dict().get("style") == "success"
 
 
 @pytest.mark.asyncio

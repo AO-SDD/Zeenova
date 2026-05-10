@@ -1245,18 +1245,34 @@ async def _send_card(
     )
 
 
+# Bot API 9.4 (Feb 9 2026) introduced an extra "style" field on inline
+# keyboard buttons with values "primary" (blue), "success" (green), or
+# "danger" (red). PTB 21.6 doesn't expose it as a named kwarg yet, but
+# it does serialize anything we pass through ``api_kwargs`` straight to
+# the wire — so we set it there. Older Telegram clients silently ignore
+# unknown fields and render the buttons in the default theme color.
+_BRAND_BUTTON_STYLE: dict[str, str] = {"style": "success"}
+
+
 def _brand_buttons(settings: Settings) -> list[InlineKeyboardButton]:
     """Two URL buttons that surface the brand's channel and chat shortcuts.
 
     Returned as a flat list so callers can compose them with their own
     rows (e.g. timeframe buttons above brand buttons on price cards).
+    The buttons request the "success" style so modern Telegram clients
+    paint them green, matching the call-to-action look of bots like
+    Phanes' ``DM me!`` shortcut.
     """
     return [
         InlineKeyboardButton(
-            f"📣 {settings.channel_name}", url=settings.telegram_channel_url
+            f"📣 {settings.channel_name}",
+            url=settings.telegram_channel_url,
+            api_kwargs=_BRAND_BUTTON_STYLE,
         ),
         InlineKeyboardButton(
-            f"💬 {settings.group_name}", url=settings.telegram_group_url
+            f"💬 {settings.group_name}",
+            url=settings.telegram_group_url,
+            api_kwargs=_BRAND_BUTTON_STYLE,
         ),
     ]
 
