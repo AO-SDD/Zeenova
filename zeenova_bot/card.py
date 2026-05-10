@@ -40,19 +40,14 @@ def _fmt_change(pct: float | None) -> str:
     return f"{sign}{pct:.2f}%"
 
 
-def render_price_card(
-    md: MarketData,
-    *,
-    channel_name: str,
-    channel_url: str,
-    group_name: str,
-    group_url: str,
-) -> str:
+def render_price_card(md: MarketData) -> str:
     """Build the HTML message body for a price card.
 
     Layout mirrors the reference screenshot: a coloured ticker header,
-    a vertical list of price stats with row-level emoji indicators, and
-    a footer with branded channel + chat links.
+    a vertical list of price stats with row-level emoji indicators.
+    The channel + chat shortcuts that used to sit at the bottom are now
+    attached as inline keyboard buttons by the caller, so the text body
+    stays focused on the data.
     """
     pct = md.price_change_pct_24h
     is_up = pct is None or pct >= 0
@@ -91,10 +86,6 @@ def render_price_card(
             f"🔽 <b>24H Low:</b> {escape(low_str)}",
             f"🏛 <b>Marketcap:</b> {escape(cap_str)}",
             f"📊 <b>24H Volume:</b> {escape(vol_str)}",
-            "",
-            f'📣 <a href="{escape(channel_url, quote=True)}"><b>{escape(channel_name)}</b></a>'
-            f"   |   "
-            f'💬 <a href="{escape(group_url, quote=True)}"><b>{escape(group_name)}</b></a>',
         ]
     )
     return "\n".join(lines)

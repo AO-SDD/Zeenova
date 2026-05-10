@@ -22,14 +22,6 @@ def _md(**overrides: object) -> MarketData:
     return MarketData(**base)  # type: ignore[arg-type]
 
 
-_FOOTER_KW: dict[str, str] = dict(
-    channel_name="Zeen Channel",
-    channel_url="https://t.me/ox_zeen",
-    group_name="Zeen Chat",
-    group_url="https://t.me/blockzeen",
-)
-
-
 def test_fmt_price_picks_precision_by_magnitude() -> None:
     assert _fmt_price(12345.6789).startswith("$12,345.")
     assert _fmt_price(1.23) == "$1.2300"
@@ -53,35 +45,39 @@ def test_fmt_change_signs() -> None:
 
 
 def test_render_card_contains_expected_pieces() -> None:
-    text = render_price_card(_md(), **_FOOTER_KW)
+    text = render_price_card(_md())
     # Pair styled as SYMBOL/USDT
     assert "MEGA/USDT" in text
     assert "Price:" in text
     assert "+1.60%" in text
     assert "1.27B" in text
     assert "20.57M USDT" in text
-    # Footer carries the configured names + URLs
-    assert "Zeen Channel" in text
-    assert "Zeen Chat" in text
-    assert "https://t.me/ox_zeen" in text
-    assert "https://t.me/blockzeen" in text
+
+
+def test_render_card_no_longer_embeds_brand_footer() -> None:
+    # Channel / chat links now live on inline keyboard buttons, not in
+    # the card body. Make sure no stray footer text leaks through.
+    text = render_price_card(_md())
+    assert "Zeen Channel" not in text
+    assert "Zeen Chat" not in text
+    assert "t.me/" not in text
 
 
 def test_render_card_uses_red_dot_when_negative() -> None:
-    text = render_price_card(_md(price_change_pct_24h=-2.5), **_FOOTER_KW)
+    text = render_price_card(_md(price_change_pct_24h=-2.5))
     assert text.startswith("🔴")
     # Inline change line also flips to red.
     assert "🔴 <b>24H Change:</b> -2.50%" in text
 
 
 def test_render_card_uses_green_dot_when_positive() -> None:
-    text = render_price_card(_md(price_change_pct_24h=4.2), **_FOOTER_KW)
+    text = render_price_card(_md(price_change_pct_24h=4.2))
     assert text.startswith("🟢")
     assert "🟢 <b>24H Change:</b> +4.20%" in text
 
 
 def test_render_card_includes_rank_when_present() -> None:
-    text = render_price_card(_md(market_cap_rank=5), **_FOOTER_KW)
+    text = render_price_card(_md(market_cap_rank=5))
     # Rank now lives in the stats block (below Volume), not next to the title.
     assert "🏆 <b>Rank:</b> No: #5" in text
     # The title line should still be just the ticker, no rank attached.
@@ -91,15 +87,9 @@ def test_render_card_includes_rank_when_present() -> None:
 
 
 def test_render_card_omits_rank_when_missing() -> None:
-    text = render_price_card(_md(market_cap_rank=None), **_FOOTER_KW)
+    text = render_price_card(_md(market_cap_rank=None))
     assert "No: #" not in text
     assert "Rank:" not in text
-
-
-def test_render_card_bolds_channel_and_group() -> None:
-    text = render_price_card(_md(), **_FOOTER_KW)
-    assert "<b>Zeen Channel</b>" in text
-    assert "<b>Zeen Chat</b>" in text
 
 
 def test_render_card_handles_missing_fields() -> None:
@@ -110,7 +100,6 @@ def test_render_card_handles_missing_fields() -> None:
             low_24h=None,
             market_cap_usd=None,
             total_volume_usd_24h=None,
-        ),
-        **_FOOTER_KW,
+        )
     )
     assert text.count("—") >= 5
