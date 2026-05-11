@@ -225,6 +225,7 @@ def build_application(
     app.add_handler(CommandHandler(["top", "movers"], cmd_top))
     app.add_handler(CommandHandler(["market", "global"], cmd_market))
     app.add_handler(CommandHandler(["news"], cmd_news))
+    app.add_handler(CommandHandler(["emojiid"], cmd_emojiid))
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & ~filters.UpdateType.EDITED, on_text
@@ -558,6 +559,68 @@ async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         disable_web_page_preview=True,
         reply_markup=_brand_keyboard(settings),
     )
+
+
+def _extract_custom_emoji_ids(msg: Message | None) -> list[tuple[str, str]]:
+    """Return ``(emoji_char, custom_emoji_id)`` pairs from ``msg``.
+
+    Looks at both ``entities`` (regular messages) and ``caption_entities``
+    (media captions). The emoji character is sliced out of the text or
+    caption using the entity's offset/length so the user can see which
+    emoji each ID belongs to in the reply.
+    """
+    if msg is None:
+        return []
+    pairs: list[tuple[str, str]] = []
+    for text, entities in (
+        (msg.text or "", msg.entities or ()),
+        (msg.caption or "", msg.caption_entities or ()),
+    ):
+        if not text or not entities:
+            continue
+        for entity in entities:
+            if entity.type != MessageEntity.CUSTOM_EMOJI:
+                continue
+            if not entity.custom_emoji_id:
+                continue
+            char = text[entity.offset : entity.offset + entity.length] or "?"
+            pairs.append((char, entity.custom_emoji_id))
+    return pairs
+
+
+async def cmd_emojiid(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reply with the ``custom_emoji_id`` of any Premium emoji in the
+    quoted/current message.
+
+    Usage: reply to a message that contains one or more Telegram
+    Premium custom emojis with ``/emojiid``. The bot replies with each
+    emoji and its numeric ID so the operator can paste it into the
+    ``BRAND_*_EMOJI_ID`` environment variables.
+    """
+    msg = update.effective_message
+    if msg is None:
+        return
+    target = msg.reply_to_message if msg.reply_to_message is not None else msg
+    pairs = _extract_custom_emoji_ids(target)
+    if not pairs:
+        await msg.reply_text(
+            "No Telegram Premium custom emoji found.\n"
+            "Reply to a message that contains a premium emoji with "
+            "<code>/emojiid</code> to get its ID.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    # De-duplicate while preserving order so repeated emojis don't
+    # print the same ID twice in a row.
+    seen: set[str] = set()
+    lines: list[str] = []
+    for char, eid in pairs:
+        if eid in seen:
+            continue
+        seen.add(eid)
+        lines.append(f"{char} → <code>{escape(eid)}</code>")
+    body = "<b>Custom emoji IDs</b>\n" + "\n".join(lines)
+    await msg.reply_text(body, parse_mode=ParseMode.HTML)
 
 
 def _convert_entities(
@@ -1245,18 +1308,50 @@ async def _send_card(
     )
 
 
+def _brand_button(
+    text: str, *, url: str, custom_emoji_id: str
+) -> InlineKeyboardButton:
+    """Build a single brand-row button, optionally decorated with a
+    Telegram Premium custom emoji.
+
+    Bot API 9.4 (Feb 9 2026) added ``icon_custom_emoji_id`` to
+    ``InlineKeyboardButton``. PTB 21.6 doesn't expose it as a named
+    kwarg yet, but anything in ``api_kwargs`` is serialised straight
+    onto the wire — so we slip it in there. The field is only honoured
+    when the bot owner has Telegram Premium (or the bot has a
+    Fragment-purchased username); without that the Telegram server
+    ignores the field, so the empty fallback is always safe.
+    """
+    api_kwargs: dict[str, str] = {}
+    cleaned = custom_emoji_id.strip()
+    if cleaned:
+        api_kwargs["icon_custom_emoji_id"] = cleaned
+    return InlineKeyboardButton(
+        text,
+        url=url,
+        api_kwargs=api_kwargs or None,
+    )
+
+
 def _brand_buttons(settings: Settings) -> list[InlineKeyboardButton]:
     """Two URL buttons that surface the brand's channel and chat shortcuts.
 
     Returned as a flat list so callers can compose them with their own
     rows (e.g. timeframe buttons above brand buttons on price cards).
+    When ``BRAND_CHANNEL_EMOJI_ID`` / ``BRAND_GROUP_EMOJI_ID`` are set
+    in the environment, each button is prefixed with the corresponding
+    Telegram Premium custom emoji.
     """
     return [
-        InlineKeyboardButton(
-            f"📣 {settings.channel_name}", url=settings.telegram_channel_url
+        _brand_button(
+            f"📣 {settings.channel_name}",
+            url=settings.telegram_channel_url,
+            custom_emoji_id=settings.brand_channel_emoji_id,
         ),
-        InlineKeyboardButton(
-            f"💬 {settings.group_name}", url=settings.telegram_group_url
+        _brand_button(
+            f"💬 {settings.group_name}",
+            url=settings.telegram_group_url,
+            custom_emoji_id=settings.brand_group_emoji_id,
         ),
     ]
 
