@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import io
 import logging
 import re
@@ -44,6 +45,7 @@ from .card import render_price_card
 from .chart import render_candles
 from .coinpaprika import CoinPaprikaClient, GlobalSnapshot, TickerSnapshot
 from .config import Settings
+from .edit_state import EditableReplyStore, ReplyKind
 from .emojis import PremiumEmojis, premium_emoji
 from .fear_greed import FearGreed, FearGreedClient, render_dial
 from .fx import FxClient
@@ -220,6 +222,11 @@ def build_application(
     app.bot_data["settings"] = settings
     app.bot_data["service"] = service
     app.bot_data["fx"] = fx
+    # Tracks the bot's reply for each user message so we can edit it in
+    # place when the user edits the original (calc result re-computes,
+    # price card swaps to the new symbol, etc.). LRU-bounded; see
+    # :mod:`zeenova_bot.edit_state`.
+    app.bot_data["edit_store"] = EditableReplyStore()
 
     app.add_handler(CommandHandler(["start", "help"], cmd_help))
     app.add_handler(CommandHandler(["p", "price"], cmd_price))
@@ -229,7 +236,18 @@ def build_application(
     app.add_handler(CommandHandler(["emojiid"], cmd_emojiid))
     app.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND & ~filters.UpdateType.EDITED, on_text
+            filters.TEXT & ~filters.COMMAND & ~filters.UpdateType.EDITED_MESSAGE,
+            on_text,
+        )
+    )
+    # Edited messages route through a dedicated handler that re-runs the
+    # calc / price-card pipeline and edits the bot's previous reply
+    # instead of sending a new one. Covers both free-text edits and
+    # ``/p <symbol>`` edits (CommandHandler ignores edits by default).
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & filters.UpdateType.EDITED_MESSAGE,
+            on_edited_text,
         )
     )
     app.add_handler(CallbackQueryHandler(on_callback, pattern=r"^tf:"))
@@ -257,7 +275,9 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     args = context.args or []
     if not args:
-        await msg.reply_text("Usage: /p SYMBOL  (e.g. /p BTC)")
+        await _send_text_reply(
+            update, context, "Usage: /p SYMBOL  (e.g. /p BTC)"
+        )
         return
     symbol = args[0].lstrip("$").strip()
     # Explicit command → keep a short "not found" reply so users know the
@@ -850,6 +870,189 @@ async def _maybe_make_quote_sticker(
     return True
 
 
+# ---------------------------------------------------------------------------
+# Edit-to-edit helpers: send a new reply on first message, edit the prior
+# reply on edited-message updates. Plain ``msg.reply_*`` would create
+# duplicate replies whenever the user fixes a typo in the original.
+# ---------------------------------------------------------------------------
+
+
+def _is_edited_update(update: Update) -> bool:
+    """True when the update represents an edited user message."""
+    return update.edited_message is not None
+
+
+async def _delete_silently(
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int
+) -> None:
+    # Reply might have been deleted by the user already; ignore.
+    with contextlib.suppress(TelegramError):
+        await context.bot.delete_message(chat_id, message_id)
+
+
+def _record_reply(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    user_msg_id: int,
+    bot_msg_id: int,
+    kind: ReplyKind,
+) -> None:
+    store: EditableReplyStore | None = context.bot_data.get("edit_store")
+    if store is None:
+        return
+    store.record(chat_id, user_msg_id, bot_msg_id=bot_msg_id, kind=kind)
+
+
+async def _send_text_reply(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    body: str,
+    *,
+    parse_mode: str | None = None,
+    disable_web_page_preview: bool = False,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> Message | None:
+    """Send a text reply, editing the bot's prior reply on EDITED updates.
+
+    When the update is an edit of a message we previously replied to:
+
+    * If the prior reply was also text → edit it in place via
+      ``edit_message_text``.
+    * If the prior reply was a photo → delete it and send a fresh
+      text reply so the message type can change.
+
+    On a brand-new (non-edit) message, just sends a normal reply.
+    Either way, records the resulting bot message id so future edits
+    can find it.
+    """
+    msg = update.effective_message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return None
+
+    store: EditableReplyStore | None = context.bot_data.get("edit_store")
+    if _is_edited_update(update) and store is not None:
+        existing = store.get(chat.id, msg.message_id)
+        if existing is not None:
+            bot_msg_id, kind = existing
+            if kind == "text":
+                try:
+                    edited = await context.bot.edit_message_text(
+                        chat_id=chat.id,
+                        message_id=bot_msg_id,
+                        text=body,
+                        parse_mode=parse_mode,
+                        disable_web_page_preview=disable_web_page_preview,
+                        reply_markup=reply_markup,
+                    )
+                    if isinstance(edited, Message):
+                        return edited
+                    return None
+                except BadRequest as exc:
+                    # "message is not modified" just means the body
+                    # didn't change. Treat as a no-op success.
+                    if "not modified" in str(exc).lower():
+                        return None
+                    logger.warning("edit_message_text failed: %s", exc)
+                    # Fall through to send a fresh reply below.
+                except TelegramError as exc:
+                    logger.warning("edit_message_text errored: %s", exc)
+            else:
+                # Was a photo; replying with text means deleting the
+                # photo and sending a new text message in its place.
+                await _delete_silently(context, chat.id, bot_msg_id)
+                store.pop(chat.id, msg.message_id)
+
+    try:
+        sent = await msg.reply_text(
+            body,
+            parse_mode=parse_mode,
+            disable_web_page_preview=disable_web_page_preview,
+            reply_markup=reply_markup,
+        )
+    except TelegramError as exc:
+        logger.warning("reply_text failed: %s", exc)
+        return None
+    _record_reply(context, chat.id, msg.message_id, sent.message_id, "text")
+    return sent
+
+
+async def _send_photo_reply(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    photo: bytes,
+    *,
+    caption: str,
+    parse_mode: str | None = None,
+    reply_markup: InlineKeyboardMarkup | None = None,
+) -> Message | None:
+    """Photo equivalent of :func:`_send_text_reply` — on edits, swaps the
+    photo and caption of the prior reply via ``edit_message_media``."""
+    msg = update.effective_message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return None
+
+    store: EditableReplyStore | None = context.bot_data.get("edit_store")
+    if _is_edited_update(update) and store is not None:
+        existing = store.get(chat.id, msg.message_id)
+        if existing is not None:
+            bot_msg_id, kind = existing
+            if kind == "photo":
+                try:
+                    media = InputMediaPhoto(
+                        media=io.BytesIO(photo),
+                        caption=caption,
+                        parse_mode=parse_mode,
+                    )
+                    edited = await context.bot.edit_message_media(
+                        chat_id=chat.id,
+                        message_id=bot_msg_id,
+                        media=media,
+                        reply_markup=reply_markup,
+                    )
+                    if isinstance(edited, Message):
+                        return edited
+                    return None
+                except TelegramError as exc:
+                    logger.warning("edit_message_media failed: %s", exc)
+                    # Fall through to send a fresh reply below.
+            else:
+                await _delete_silently(context, chat.id, bot_msg_id)
+                store.pop(chat.id, msg.message_id)
+
+    try:
+        sent = await context.bot.send_photo(
+            chat_id=chat.id,
+            photo=io.BytesIO(photo),
+            caption=caption,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+            reply_to_message_id=msg.message_id,
+        )
+    except TelegramError as exc:
+        logger.warning("send_photo failed: %s", exc)
+        return None
+    _record_reply(context, chat.id, msg.message_id, sent.message_id, "photo")
+    return sent
+
+
+# Matches ``/p btc``, ``/price BTC``, ``/p@MyBot eth`` — used by the
+# edited-message handler to spot a price-command edit (CommandHandler
+# itself doesn't fire on EDITED_MESSAGE updates).
+_PRICE_CMD_RE = re.compile(
+    r"^/(?:p|price)(?:@\w+)?\s+(?P<symbol>\S+)\s*$", re.IGNORECASE
+)
+
+
+def _parse_price_command(text: str) -> str | None:
+    """Return the symbol from ``/p SYMBOL`` / ``/price SYMBOL`` or None."""
+    match = _PRICE_CMD_RE.match(text.strip())
+    if not match:
+        return None
+    return match.group("symbol").lstrip("$").strip() or None
+
+
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     chat = update.effective_chat
@@ -885,6 +1088,63 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     # Free-text matches stay silent on misses — a stray word in a chat
     # shouldn't generate a "not found" reply that pollutes the room.
+    await _send_card(
+        update,
+        context,
+        symbol=symbol,
+        timeframe=DEFAULT_TIMEFRAME,
+        notify_if_unknown=False,
+    )
+
+
+async def on_edited_text(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Re-run calc / symbol / ``/p`` logic on an edited user message and
+    edit the bot's previous reply instead of sending a new one.
+
+    Telegram's ``CommandHandler`` ignores edited messages, so we handle
+    ``/p SYMBOL`` here too rather than registering a second
+    CommandHandler that would still need its own dispatch.
+    """
+    msg = update.effective_message
+    chat = update.effective_chat
+    if msg is None or chat is None or not msg.text:
+        return
+    settings: Settings = context.bot_data["settings"]
+    if (
+        chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}
+        and settings.allowed_chat_id_set
+        and chat.id not in settings.allowed_chat_id_set
+    ):
+        return
+
+    text = msg.text.strip()
+
+    # ``/p SYMBOL`` edits route through the same price-card pipeline as
+    # the normal command.
+    cmd_symbol = _parse_price_command(text)
+    if cmd_symbol is not None:
+        await _send_card(
+            update,
+            context,
+            symbol=cmd_symbol,
+            timeframe=DEFAULT_TIMEFRAME,
+            notify_if_unknown=True,
+        )
+        return
+
+    # Calc / FX edits.
+    if await _handle_calc(update, context, text):
+        return
+
+    # Free-text symbol edits (e.g. ``btx`` → ``btc``).
+    match = _SYMBOL_RE.match(text)
+    if not match:
+        return
+    symbol = match.group(1)
+    if symbol.lower() in _STOP_WORDS:
+        return
     await _send_card(
         update,
         context,
@@ -1015,17 +1275,29 @@ def _fmt_amount(value: float) -> str:
     return text
 
 
-async def _handle_calc(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
-) -> bool:
-    """Try to interpret ``text`` as math/conversion. Returns True if handled."""
-    msg = update.effective_message
-    if msg is None:
-        return False
+async def _compute_calc_line(
+    parsed: tuple[str, str | None, str | None],
+    *,
+    in_group: bool,
+    fx: FxClient,
+    service: CoinService,
+) -> tuple[str | None, bool]:
+    """Evaluate one parsed calc line.
 
-    parsed = parse_calc_input(text)
-    if parsed is None:
-        return False
+    Returns ``(body_html, claimed)``:
+
+    * ``body_html`` is the HTML reply body for this line (or ``None`` when
+      the line is silently dropped — e.g. a bare ``50%`` in a group).
+    * ``claimed`` is ``True`` when the calc layer should be considered to
+      have handled the line (success, math error, FX failure, …) and
+      ``False`` when the caller should fall through to other handlers.
+
+    The original :func:`_handle_calc` body called ``reply_text`` directly
+    at six different points; this helper consolidates that into "return
+    the body string" so callers can choose between sending a single
+    reply (single-line input) or joining multiple bodies (multi-line
+    input) before hitting Telegram.
+    """
     expr, ccy1, ccy2 = parsed
 
     has_op = any(c in expr for c in _CALC_OPS)
@@ -1034,64 +1306,53 @@ async def _handle_calc(
     if not has_op and not has_ccy:
         # Bare number with no operator and no currency — nothing useful to
         # echo back; let it drop silently.
-        return False
+        return None, False
 
-    # In groups, a bare ``50%`` (no other operator, no currency) is almost
-    # always casual conversation rather than a math request. Stay silent
-    # so the bot doesn't blurt "= 0.5" into every chat where someone
-    # mentions a percentage.
-    chat = update.effective_chat
-    in_group = chat is not None and chat.type in {
-        ChatType.GROUP,
-        ChatType.SUPERGROUP,
-    }
     if in_group and not has_strong_op and not has_ccy:
-        return False
+        # In groups, a bare ``50%`` (no other operator, no currency) is
+        # almost always casual conversation rather than a math request.
+        return None, False
 
     try:
         value = safe_eval(expr)
     except CalcError as exc:
-        # In groups, swallow parse errors silently when the message
-        # didn't have a strong calc signal — otherwise the bot blurts
-        # "Math error: invalid syntax" at every stray ``50%`` or ``5/``
-        # someone types in chat.
         if in_group and not has_strong_op and not has_ccy:
-            return False
-        await msg.reply_text(f"⚠️ Math error: {exc}")
-        return True
+            return None, False
+        return f"⚠️ Math error: {escape(str(exc))}", True
 
     expr_pretty = " ".join(expr.split())
     if not has_ccy:
-        # Pure math.
-        body = f"<code>{escape(expr_pretty)}</code>\n= <code>{_fmt_amount(value)}</code>"
-        await msg.reply_text(body, parse_mode=ParseMode.HTML)
-        return True
+        body = (
+            f"<code>{escape(expr_pretty)}</code>\n"
+            f"= <code>{_fmt_amount(value)}</code>"
+        )
+        return body, True
 
-    fx: FxClient = context.bot_data["fx"]
-    service: CoinService = context.bot_data["service"]
-    # 1 currency given → ``ccy1 → USD`` (the named currency is what the user
-    # has; USD is the implicit quote). 2 given → ``ccy1 → ccy2``.
+    # 1 currency given → ``ccy1 → USD`` (the named currency is what the
+    # user has; USD is the implicit quote). 2 given → ``ccy1 → ccy2``.
+    assert ccy1 is not None
     if ccy2 is None:
-        from_ccy, to_ccy = ccy1.lower(), "usd"  # type: ignore[union-attr]
+        from_ccy, to_ccy = ccy1.lower(), "usd"
     else:
-        from_ccy, to_ccy = ccy1.lower(), ccy2.lower()  # type: ignore[union-attr]
+        from_ccy, to_ccy = ccy1.lower(), ccy2.lower()
 
     try:
-        converted = await convert_with_fallback(fx, service, value, from_ccy, to_ccy)
+        converted = await convert_with_fallback(
+            fx, service, value, from_ccy, to_ccy
+        )
     except Exception:  # noqa: BLE001
         logger.exception("fx: convert raised for %s -> %s", from_ccy, to_ccy)
-        await msg.reply_text(
-            "⚠️ Couldn't reach the currency rates service. Try again in a moment."
-        )
-        return True
+        return (
+            "⚠️ Couldn't reach the currency rates service. "
+            "Try again in a moment."
+        ), True
 
     if converted is None:
-        await msg.reply_text(
-            f"⚠️ Unsupported currency pair: <b>{escape(from_ccy.upper())}</b> → "
-            f"<b>{escape(to_ccy.upper())}</b>",
-            parse_mode=ParseMode.HTML,
-        )
-        return True
+        return (
+            f"⚠️ Unsupported currency pair: "
+            f"<b>{escape(from_ccy.upper())}</b> → "
+            f"<b>{escape(to_ccy.upper())}</b>"
+        ), True
 
     from_str = f"{_fmt_amount(value)} {from_ccy.upper()}"
     to_str = f"{_fmt_amount(converted)} {to_ccy.upper()}"
@@ -1099,8 +1360,71 @@ async def _handle_calc(
         header = f"<code>{escape(expr_pretty)}</code> = {escape(from_str)}"
     else:
         header = escape(from_str)
-    body = f"{header}\n≈ <code>{escape(to_str)}</code>"
-    await msg.reply_text(body, parse_mode=ParseMode.HTML)
+    return f"{header}\n≈ <code>{escape(to_str)}</code>", True
+
+
+async def _handle_calc(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
+) -> bool:
+    """Try to interpret ``text`` as math/conversion. Returns True if handled.
+
+    Supports both single-line input (``2+2``, ``100 usd egp``,
+    ``2+2/4 btc``) and multi-line input where each non-empty line parses
+    independently (``2/1\\n2*2`` → both results in one reply).
+    """
+    msg = update.effective_message
+    if msg is None:
+        return False
+
+    chat = update.effective_chat
+    in_group = chat is not None and chat.type in {
+        ChatType.GROUP,
+        ChatType.SUPERGROUP,
+    }
+    fx: FxClient = context.bot_data["fx"]
+    service: CoinService = context.bot_data["service"]
+
+    # Multi-line: only kick in when every non-empty line independently
+    # parses as a calc expression. Otherwise fall through to single-line
+    # handling so messages like "Hey 2+2" don't get half-interpreted.
+    raw_lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if len(raw_lines) > 1:
+        parsed_lines = [parse_calc_input(ln) for ln in raw_lines]
+        if all(p is not None for p in parsed_lines):
+            bodies: list[str] = []
+            for parsed in parsed_lines:
+                assert parsed is not None
+                body, claimed = await _compute_calc_line(
+                    parsed, in_group=in_group, fx=fx, service=service
+                )
+                if claimed and body is not None:
+                    bodies.append(body)
+            if bodies:
+                # Blank line between each line's result so the reply is
+                # easy to scan when the user submitted several
+                # operations at once.
+                await _send_text_reply(
+                    update,
+                    context,
+                    "\n\n".join(bodies),
+                    parse_mode=ParseMode.HTML,
+                )
+                return True
+            # No line produced a body (every line dropped silently);
+            # fall through to single-line which will also drop silently.
+
+    parsed = parse_calc_input(text)
+    if parsed is None:
+        return False
+
+    body, claimed = await _compute_calc_line(
+        parsed, in_group=in_group, fx=fx, service=service
+    )
+    if not claimed:
+        return False
+    if body is None:
+        return True
+    await _send_text_reply(update, context, body, parse_mode=ParseMode.HTML)
     return True
 
 
@@ -1318,7 +1642,9 @@ async def _send_card(
     ref = await _resolve_for_price_card(service, fx, symbol)
     if ref is None:
         if notify_if_unknown:
-            await msg.reply_text(
+            await _send_text_reply(
+                update,
+                context,
                 f"<b>{escape(symbol.upper())}</b> not found on any of our data sources.",
                 parse_mode=ParseMode.HTML,
             )
@@ -1330,13 +1656,17 @@ async def _send_card(
         try:
             md = await service.market(ref)
         except CoinNotFound as exc:
-            await msg.reply_text(
+            await _send_text_reply(
+                update,
+                context,
                 f"Data error: {escape(str(exc))}",
                 parse_mode=ParseMode.HTML,
             )
             return
         caption = render_price_card(md, _resolve_premium_emojis(settings))
-        await msg.reply_text(
+        await _send_text_reply(
+            update,
+            context,
             caption,
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
@@ -1350,7 +1680,9 @@ async def _send_card(
             service.candles(ref=ref, timeframe=timeframe),
         )
     except CoinNotFound as exc:
-        await msg.reply_text(
+        await _send_text_reply(
+            update,
+            context,
             f"Data error: {escape(str(exc))}",
             parse_mode=ParseMode.HTML,
         )
@@ -1364,13 +1696,13 @@ async def _send_card(
     )
     caption = render_price_card(md, _resolve_premium_emojis(settings))
     keyboard = _build_keyboard(ref=ref, active=timeframe, settings=settings)
-    await context.bot.send_photo(
-        chat_id=chat.id,
-        photo=png,
+    await _send_photo_reply(
+        update,
+        context,
+        png,
         caption=caption,
         parse_mode=ParseMode.HTML,
         reply_markup=keyboard,
-        reply_to_message_id=msg.message_id,
     )
 
 

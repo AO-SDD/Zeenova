@@ -44,11 +44,18 @@ Built for the **Zeen** community channels:
   `10%3`.
 - Suffixes: `1k`, `1.5m`, `2.5b`, `1.2t`.
 - Percent operator: `100+10%` = `110`, `1000-0.1%` = `999`, `5%` = `0.05`.
+- Thousands separators in numeric literals: `37,632.00 + 30%` parses as
+  `37,632.00 * 1.30`, `1,000,000 / 4` works as expected.
+- Multi-line input: paste two calculations on separate lines (e.g.
+  `2/1` then `2*2`) and the bot returns both results in a single reply.
 - Currency conversion: `5 usd egp`, `300 star`, `3 usdt egp`,
   `1k mnt usd`. Worldwide fiat coverage; crypto symbols always win
   ambiguity (so `MNT` = Mantle, not Mongolian Tugrik).
 - Group-friendly: stays silent on bare expressions like `50%` so it
   doesn't interrupt casual chat.
+- **Edit-to-edit**: edit your original message (fix a number, swap a
+  symbol like `btx` → `btc`, change `/p btc` → `/p eth`) and the bot
+  edits its previous reply in place instead of sending a new one.
 
 ### Quote stickers
 - Reply to any text message with just `z` (or `Z`) and the bot will turn

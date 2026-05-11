@@ -109,6 +109,13 @@ def safe_eval(expr: str) -> float:
         raise CalcError("empty expression")
     if len(expr) > _MAX_EXPR_LEN:
         raise CalcError("expression too long")
+    # Strip thousands separators inside numeric literals so ``37,632.00``
+    # parses as ``37632.00`` and ``1,000,000`` as ``1000000``. We only
+    # remove a comma when it sits between two digits, which avoids
+    # touching Python tuple syntax (``1,2`` would be a tuple, but
+    # ``1,000`` is clearly a number) — though tuples aren't valid in
+    # the AST evaluator anyway.
+    expr = re.sub(r"(?<=\d),(?=\d)", "", expr)
     # Allow ``^`` as a friendlier alias for power; users who type ``2^10``
     # almost always mean ``2**10`` rather than the bitwise XOR Python gives
     # them by default.
@@ -220,7 +227,7 @@ def _percent_value(node: ast.AST) -> float:
 _CALC_RE = re.compile(
     r"""
     ^\s*
-    (?P<expr>[\d+\-*/.()\s%^kmbtKMBT]+?) # arithmetic body
+    (?P<expr>[\d+\-*/.,()\s%^kmbtKMBT]+?) # arithmetic body
     (?:\s+(?P<ccy1>[A-Za-z]{2,8}))?      # optional from-currency
     (?:\s+(?P<ccy2>[A-Za-z]{2,8}))?      # optional to-currency
     \s*$

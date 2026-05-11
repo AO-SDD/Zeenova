@@ -415,6 +415,101 @@ async def test_invalid_syntax_silent_in_group() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Comma-grouped numbers and multi-line input through the calc handler.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_thousands_separator_evaluates_in_dm() -> None:
+    """``37,632.00+30%`` evaluates to 48 921.60 (= 37,632 * 1.30)."""
+    fx = _fx_returning({})
+    svc = _service_with({})
+    update, context = _calc_update_context(
+        "37,632.00+30%", fx, svc, chat_type=ChatType.PRIVATE
+    )
+    assert (
+        await _handle_calc(update, context, "37,632.00+30%") is True
+    )
+    reply = _last_reply(update.effective_message)
+    # ``_fmt_amount`` shows ``48,921.60`` for values >= 1000.
+    assert "48,921.60" in reply
+
+
+@pytest.mark.asyncio
+async def test_multi_line_two_calcs_one_reply() -> None:
+    """``2/1\\n2*2`` → one reply containing both results."""
+    fx = _fx_returning({})
+    svc = _service_with({})
+    text = "2/1\n2*2"
+    update, context = _calc_update_context(
+        text, fx, svc, chat_type=ChatType.PRIVATE
+    )
+    assert await _handle_calc(update, context, text) is True
+    msg = update.effective_message
+    # One Telegram round-trip, not two.
+    assert msg.reply_text.call_count == 1
+    reply = _last_reply(msg)
+    # Both expressions and both results appear in the same body.
+    assert "2/1" in reply
+    assert "2*2" in reply
+    assert "= <code>2</code>" in reply  # 2/1
+    assert "= <code>4</code>" in reply  # 2*2
+
+
+@pytest.mark.asyncio
+async def test_multi_line_with_currency_lines() -> None:
+    """Mixed multi-line: pure math + a single-currency line both evaluate."""
+    fx = _fx_returning({"egp": {"usd": 1 / 50.0}})
+    svc = _service_with({})
+    text = "10+5\n100 egp"
+    update, context = _calc_update_context(
+        text, fx, svc, chat_type=ChatType.PRIVATE
+    )
+    assert await _handle_calc(update, context, text) is True
+    msg = update.effective_message
+    assert msg.reply_text.call_count == 1
+    reply = _last_reply(msg)
+    assert "10+5" in reply
+    assert "100 EGP" in reply
+
+
+@pytest.mark.asyncio
+async def test_multi_line_falls_through_when_any_line_unparseable() -> None:
+    """If even one line isn't calc-shaped, multi-line mode is skipped.
+
+    Here the second line has more tokens than the single-line regex can
+    swallow as a currency pair, so the whole message doesn't parse and
+    the handler returns False without sending a reply.
+    """
+    fx = _fx_returning({})
+    svc = _service_with({})
+    text = "2+2\nfoo bar baz"
+    update, context = _calc_update_context(
+        text, fx, svc, chat_type=ChatType.PRIVATE
+    )
+    assert await _handle_calc(update, context, text) is False
+    update.effective_message.reply_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_multi_line_three_calcs() -> None:
+    """``1+1\\n2+2\\n3+3`` — three results in one reply."""
+    fx = _fx_returning({})
+    svc = _service_with({})
+    text = "1+1\n2+2\n3+3"
+    update, context = _calc_update_context(
+        text, fx, svc, chat_type=ChatType.PRIVATE
+    )
+    assert await _handle_calc(update, context, text) is True
+    msg = update.effective_message
+    assert msg.reply_text.call_count == 1
+    reply = _last_reply(msg)
+    assert "= <code>2</code>" in reply
+    assert "= <code>4</code>" in reply
+    assert "= <code>6</code>" in reply
+
+
+# ---------------------------------------------------------------------------
 # /start and /help message body + inline keyboard.
 # ---------------------------------------------------------------------------
 
@@ -1733,3 +1828,148 @@ def test_change_id_pins_24h_change_emoji_regardless_of_direction() -> None:
     body_up = render_price_card(md_up, emojis)
     assert body_up.count("🟢") == 1  # only the header dot
     assert '<tg-emoji emoji-id="9999">📊</tg-emoji> <b>24H Change:</b>' in body_up
+
+
+# ---------------------------------------------------------------------------
+# /p command parser + edit-to-edit reply helpers.
+# ---------------------------------------------------------------------------
+
+
+class TestParsePriceCommand:
+    """``/p SYMBOL`` parsing used by the edited-message dispatcher."""
+
+    def test_short_alias(self) -> None:
+        from zeenova_bot.handlers import _parse_price_command
+
+        assert _parse_price_command("/p btc") == "btc"
+
+    def test_full_alias(self) -> None:
+        from zeenova_bot.handlers import _parse_price_command
+
+        assert _parse_price_command("/price BTC") == "BTC"
+
+    def test_strips_leading_dollar(self) -> None:
+        from zeenova_bot.handlers import _parse_price_command
+
+        assert _parse_price_command("/p $eth") == "eth"
+
+    def test_with_bot_handle(self) -> None:
+        from zeenova_bot.handlers import _parse_price_command
+
+        assert _parse_price_command("/p@MyBot doge") == "doge"
+
+    def test_extra_args_ignored(self) -> None:
+        # The price command only takes one symbol; ``/p btc eth`` doesn't
+        # match (the regex requires the line to end after the symbol).
+        from zeenova_bot.handlers import _parse_price_command
+
+        assert _parse_price_command("/p btc eth") is None
+
+    def test_no_command_returns_none(self) -> None:
+        from zeenova_bot.handlers import _parse_price_command
+
+        assert _parse_price_command("hello there") is None
+
+    def test_missing_symbol(self) -> None:
+        from zeenova_bot.handlers import _parse_price_command
+
+        assert _parse_price_command("/p") is None
+        assert _parse_price_command("/price ") is None
+
+
+def _editable_update_context(
+    text: str,
+    *,
+    is_edit: bool,
+    edit_store: object | None = None,
+    chat_id: int = 1,
+    user_msg_id: int = 100,
+    bot_msg_id: int = 999,
+) -> tuple[MagicMock, MagicMock]:
+    """Wire up a minimal Update + Context for the edit-aware send helpers."""
+    msg = MagicMock()
+    msg.text = text
+    msg.message_id = user_msg_id
+    sent = MagicMock()
+    sent.message_id = bot_msg_id
+    msg.reply_text = AsyncMock(return_value=sent)
+    update = MagicMock()
+    update.effective_message = msg
+    chat = MagicMock()
+    chat.id = chat_id
+    chat.type = ChatType.PRIVATE
+    update.effective_chat = chat
+    # ``_is_edited_update`` reads ``update.edited_message is not None``.
+    update.edited_message = msg if is_edit else None
+    context = MagicMock()
+    context.bot = MagicMock()
+    context.bot.edit_message_text = AsyncMock(return_value=sent)
+    context.bot.edit_message_media = AsyncMock(return_value=sent)
+    context.bot.delete_message = AsyncMock()
+    context.bot.send_photo = AsyncMock(return_value=sent)
+    context.bot_data = {"edit_store": edit_store} if edit_store is not None else {}
+    return update, context
+
+
+@pytest.mark.asyncio
+async def test_send_text_reply_records_bot_msg_for_first_send() -> None:
+    """On a brand-new message, ``_send_text_reply`` sends a normal reply
+    and records the resulting bot message id for later edits."""
+    from telegram import Message
+
+    from zeenova_bot.edit_state import EditableReplyStore
+    from zeenova_bot.handlers import _send_text_reply
+
+    store = EditableReplyStore()
+    update, context = _editable_update_context(
+        "2+2", is_edit=False, edit_store=store
+    )
+    # ``msg.reply_text`` returns a real-looking Message-like object so we
+    # can pull ``message_id`` off it after the await.
+    update.effective_message.reply_text.return_value = MagicMock(
+        spec=Message, message_id=42
+    )
+    await _send_text_reply(update, context, "hello")
+    update.effective_message.reply_text.assert_awaited_once()
+    assert store.get(1, 100) == (42, "text")
+
+
+@pytest.mark.asyncio
+async def test_send_text_reply_edits_prior_text_reply() -> None:
+    """When the update is an edit and the prior reply was text, the
+    helper calls ``edit_message_text`` instead of ``reply_text``."""
+    from zeenova_bot.edit_state import EditableReplyStore
+    from zeenova_bot.handlers import _send_text_reply
+
+    store = EditableReplyStore()
+    store.record(1, 100, bot_msg_id=42, kind="text")
+    update, context = _editable_update_context(
+        "2+3", is_edit=True, edit_store=store
+    )
+    await _send_text_reply(update, context, "updated")
+    context.bot.edit_message_text.assert_awaited_once()
+    update.effective_message.reply_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_text_reply_deletes_and_resends_when_kind_changes() -> None:
+    """If the prior reply was a photo but we now want to send text, the
+    photo is deleted and a fresh text reply takes its place."""
+    from telegram import Message
+
+    from zeenova_bot.edit_state import EditableReplyStore
+    from zeenova_bot.handlers import _send_text_reply
+
+    store = EditableReplyStore()
+    store.record(1, 100, bot_msg_id=42, kind="photo")
+    update, context = _editable_update_context(
+        "2+3", is_edit=True, edit_store=store
+    )
+    update.effective_message.reply_text.return_value = MagicMock(
+        spec=Message, message_id=43
+    )
+    await _send_text_reply(update, context, "now text")
+    context.bot.delete_message.assert_awaited_once_with(1, 42)
+    update.effective_message.reply_text.assert_awaited_once()
+    # New entry records the new bot message id under the same key.
+    assert store.get(1, 100) == (43, "text")
