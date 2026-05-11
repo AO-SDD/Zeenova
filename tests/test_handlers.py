@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from telegram import MessageEntity
 from telegram.constants import ChatType
 
 from zeenova_bot.config import Settings
@@ -1347,3 +1348,135 @@ async def test_cmd_news_attaches_brand_buttons() -> None:
     await cmd_news(update, context)
     kwargs = _last_reply_kwargs(update.effective_message)
     _assert_brand_keyboard(kwargs.get("reply_markup"))
+
+
+# ---------------------------------------------------------------------------
+# Premium custom-emoji icons on brand buttons + /emojiid helper
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_brand_buttons_no_icon_when_emoji_ids_unset() -> None:
+    """Without ``BRAND_*_EMOJI_ID`` set, buttons carry no custom emoji."""
+    from zeenova_bot.handlers import _brand_buttons
+
+    settings = _settings()
+    btns = _brand_buttons(settings)
+    for btn in btns:
+        assert "icon_custom_emoji_id" not in btn.to_dict()
+
+
+@pytest.mark.asyncio
+async def test_brand_buttons_attach_icon_when_emoji_ids_set() -> None:
+    """When the env vars are set, both buttons gain the icon hint."""
+    from zeenova_bot.handlers import _brand_buttons
+
+    settings = _settings()
+    settings.brand_channel_emoji_id = "5436105917961765442"
+    settings.brand_group_emoji_id = "5429524775225921481"
+    channel_btn, chat_btn = _brand_buttons(settings)
+    assert channel_btn.to_dict().get("icon_custom_emoji_id") == "5436105917961765442"
+    assert chat_btn.to_dict().get("icon_custom_emoji_id") == "5429524775225921481"
+
+
+@pytest.mark.asyncio
+async def test_brand_buttons_strip_whitespace_in_emoji_id() -> None:
+    """Whitespace around the env var value shouldn't break the API call."""
+    from zeenova_bot.handlers import _brand_buttons
+
+    settings = _settings()
+    settings.brand_channel_emoji_id = "  5436105917961765442  "
+    settings.brand_group_emoji_id = "\t5429524775225921481\n"
+    channel_btn, chat_btn = _brand_buttons(settings)
+    assert channel_btn.to_dict().get("icon_custom_emoji_id") == "5436105917961765442"
+    assert chat_btn.to_dict().get("icon_custom_emoji_id") == "5429524775225921481"
+
+
+def _emojiid_update_context(
+    *, message_entities: list[MessageEntity] | None = None,
+    reply_entities: list[MessageEntity] | None = None,
+    text: str = "",
+    reply_text: str = "",
+) -> tuple[MagicMock, MagicMock]:
+    """Build an Update/Context pair for the /emojiid handler."""
+    msg = MagicMock()
+    msg.reply_text = AsyncMock()
+    msg.text = text
+    msg.caption = None
+    msg.entities = tuple(message_entities or ())
+    msg.caption_entities = ()
+    if reply_entities is not None or reply_text:
+        reply = MagicMock()
+        reply.text = reply_text
+        reply.caption = None
+        reply.entities = tuple(reply_entities or ())
+        reply.caption_entities = ()
+        msg.reply_to_message = reply
+    else:
+        msg.reply_to_message = None
+    update = MagicMock()
+    update.effective_message = msg
+    context = MagicMock()
+    context.bot_data = {}
+    return update, context
+
+
+@pytest.mark.asyncio
+async def test_cmd_emojiid_returns_id_from_replied_message() -> None:
+    """When replying to a message with a Premium emoji, the bot
+    returns that emoji's ``custom_emoji_id``."""
+    from zeenova_bot.handlers import cmd_emojiid
+
+    entity = MessageEntity(
+        type=MessageEntity.CUSTOM_EMOJI,
+        offset=0,
+        length=2,
+        custom_emoji_id="5436105917961765442",
+    )
+    update, context = _emojiid_update_context(
+        reply_entities=[entity], reply_text="⚡ hi"
+    )
+    await cmd_emojiid(update, context)
+    body = _last_reply(update.effective_message)
+    assert "5436105917961765442" in body
+    assert "⚡" in body
+
+
+@pytest.mark.asyncio
+async def test_cmd_emojiid_explains_when_no_custom_emoji_found() -> None:
+    """If the replied message has no custom emoji, the bot
+    sends a usage hint instead of staying silent."""
+    from zeenova_bot.handlers import cmd_emojiid
+
+    update, context = _emojiid_update_context(reply_text="plain text")
+    await cmd_emojiid(update, context)
+    body = _last_reply(update.effective_message)
+    assert "No Telegram Premium custom emoji" in body
+
+
+@pytest.mark.asyncio
+async def test_cmd_emojiid_dedupes_repeated_ids() -> None:
+    """A message with the same emoji repeated should print one row."""
+    from zeenova_bot.handlers import cmd_emojiid
+
+    eid = "5436105917961765442"
+    entities = [
+        MessageEntity(
+            type=MessageEntity.CUSTOM_EMOJI,
+            offset=0,
+            length=2,
+            custom_emoji_id=eid,
+        ),
+        MessageEntity(
+            type=MessageEntity.CUSTOM_EMOJI,
+            offset=3,
+            length=2,
+            custom_emoji_id=eid,
+        ),
+    ]
+    update, context = _emojiid_update_context(
+        reply_entities=entities, reply_text="⚡ ⚡"
+    )
+    await cmd_emojiid(update, context)
+    body = _last_reply(update.effective_message)
+    assert body.count(eid) == 1

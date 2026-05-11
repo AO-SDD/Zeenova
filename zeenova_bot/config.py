@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     group_name: str = Field(default="Zeen Chat")
     telegram_channel_url: str = Field(default="https://t.me/ox_zeen")
     telegram_group_url: str = Field(default="https://t.me/blockzeen")
+    # Optional Telegram Premium custom-emoji IDs that decorate the
+    # ``📣 Zeen Channel`` and ``💬 Zeen Chat`` shortcut buttons. Telegram
+    # accepts ``icon_custom_emoji_id`` only when the bot owner has a
+    # Premium subscription (or the bot bought a Fragment username). Leave
+    # blank to render the buttons without a custom icon — the regular
+    # emoji in the label is shown either way.
+    brand_channel_emoji_id: str = Field(default="")
+    brand_group_emoji_id: str = Field(default="")
 
     log_level: str = Field(default="INFO")
 
