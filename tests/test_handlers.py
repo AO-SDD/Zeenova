@@ -1532,3 +1532,129 @@ async def test_brand_buttons_keep_fallback_emoji_without_premium_icon() -> None:
     channel_btn, chat_btn = _brand_buttons(settings)
     assert channel_btn.text == f"📣 {_bold_label('Zeen Channel')}"
     assert chat_btn.text == f"💬 {_bold_label('Zeen Chat')}"
+
+
+# ---------------------------------------------------------------------------
+# Premium custom-emoji substitution in body text
+# ---------------------------------------------------------------------------
+
+
+def test_premium_emoji_returns_raw_when_id_blank() -> None:
+    """An empty / whitespace-only ID leaves the emoji unchanged."""
+    from zeenova_bot.emojis import premium_emoji
+
+    assert premium_emoji("🏆", "") == "🏆"
+    assert premium_emoji("🏆", "   ") == "🏆"
+
+
+def test_premium_emoji_wraps_with_tg_emoji_when_id_set() -> None:
+    """A non-empty ID wraps the emoji in a ``<tg-emoji>`` tag."""
+    from zeenova_bot.emojis import premium_emoji
+
+    assert premium_emoji("🏆", "5436105917961765442") == (
+        '<tg-emoji emoji-id="5436105917961765442">🏆</tg-emoji>'
+    )
+
+
+def test_premium_emoji_escapes_id_attribute() -> None:
+    """The ID is HTML-escaped so a hostile value can't break out of
+    the attribute (defensive — IDs come from user-controlled env vars)."""
+    from zeenova_bot.emojis import premium_emoji
+
+    out = premium_emoji("🏆", '" onmouseover="x')
+    assert "<tg-emoji" in out
+    assert '" ' not in out
+    assert "onmouseover" in out  # the literal value is preserved but escaped
+    assert "&quot;" in out
+
+
+def test_resolve_premium_emojis_default_returns_plain_glyphs() -> None:
+    """With no env vars set, every slot is the raw fallback emoji."""
+    from zeenova_bot.handlers import _resolve_premium_emojis
+
+    emojis = _resolve_premium_emojis(_settings())
+    assert emojis.up == "🟢"
+    assert emojis.down == "🔴"
+    assert emojis.rank == "🏆"
+    assert emojis.price == "💵"
+    assert emojis.high == "🔼"
+    assert emojis.low == "🔽"
+    assert emojis.mcap == "🏛"
+    assert emojis.volume == "📊"
+    assert emojis.globe == "🌐"
+    assert emojis.btc == "🟠"
+    assert emojis.coins == "🪙"
+    assert emojis.top == "📈"
+    assert emojis.news == "📰"
+
+
+def test_resolve_premium_emojis_wraps_configured_slots() -> None:
+    """Configured slots come back as ``<tg-emoji>`` HTML; unset slots
+    stay as the raw glyph."""
+    from zeenova_bot.handlers import _resolve_premium_emojis
+
+    settings = _settings()
+    settings.premium_emoji_rank_id = "5436"
+    settings.premium_emoji_volume_id = "5437"
+    emojis = _resolve_premium_emojis(settings)
+    assert emojis.rank == '<tg-emoji emoji-id="5436">🏆</tg-emoji>'
+    assert emojis.volume == '<tg-emoji emoji-id="5437">📊</tg-emoji>'
+    # Untouched slots stay plain.
+    assert emojis.price == "💵"
+    assert emojis.high == "🔼"
+
+
+def test_render_price_card_uses_configured_premium_emojis() -> None:
+    """Setting a Premium emoji ID wraps the matching body emoji."""
+    from zeenova_bot.card import render_price_card
+    from zeenova_bot.handlers import _resolve_premium_emojis
+    from zeenova_bot.services import MarketData
+
+    md = MarketData(
+        symbol="BTC",
+        pair="BTCUSDT",
+        source="binance",
+        price_usd=80_000.0,
+        price_change_pct_24h=1.5,
+        high_24h=82_000.0,
+        low_24h=79_000.0,
+        market_cap_usd=1.6e12,
+        total_volume_usd_24h=4.2e10,
+        market_cap_rank=1,
+    )
+
+    settings = _settings()
+    settings.premium_emoji_rank_id = "111"
+    settings.premium_emoji_price_id = "222"
+    settings.premium_emoji_mcap_id = "333"
+    body = render_price_card(md, _resolve_premium_emojis(settings))
+    assert '<tg-emoji emoji-id="111">🏆</tg-emoji>' in body
+    assert '<tg-emoji emoji-id="222">💵</tg-emoji>' in body
+    assert '<tg-emoji emoji-id="333">🏛</tg-emoji>' in body
+    # 24H High wasn't configured → still the raw glyph.
+    assert "🔼 <b>24H High:</b>" in body
+
+
+def test_render_price_card_defaults_to_plain_emojis_without_override() -> None:
+    """Calling render_price_card without emojis keeps the legacy plain
+    glyphs (backward compatible)."""
+    from zeenova_bot.card import render_price_card
+    from zeenova_bot.services import MarketData
+
+    md = MarketData(
+        symbol="BTC",
+        pair="BTCUSDT",
+        source="binance",
+        price_usd=80_000.0,
+        price_change_pct_24h=-2.5,
+        high_24h=82_000.0,
+        low_24h=79_000.0,
+        market_cap_usd=1.6e12,
+        total_volume_usd_24h=4.2e10,
+        market_cap_rank=1,
+    )
+    body = render_price_card(md)
+    assert "🏆" in body
+    assert "💵" in body
+    assert "🔴" in body  # 24H change negative → down
+    assert "<tg-emoji" not in body

@@ -39,6 +39,29 @@ class Settings(BaseSettings):
     brand_channel_emoji_id: str = Field(default="")
     brand_group_emoji_id: str = Field(default="")
 
+    # Optional Telegram Premium custom-emoji IDs that replace the
+    # in-body emojis on price cards, ``/market`` and ``/top``. Each one
+    # is wrapped in a ``<tg-emoji emoji-id="...">…</tg-emoji>`` tag so
+    # Premium clients show the configured custom emoji while older /
+    # non-Premium clients fall back to the regular emoji. Same Premium
+    # requirement as the brand-button icons: the bot owner needs a
+    # Telegram Premium subscription. Leave any of these blank to keep
+    # the corresponding emoji at its default look.
+    premium_emoji_up_id: str = Field(default="")  # 🟢
+    premium_emoji_down_id: str = Field(default="")  # 🔴
+    premium_emoji_rank_id: str = Field(default="")  # 🏆
+    premium_emoji_price_id: str = Field(default="")  # 💵
+    premium_emoji_high_id: str = Field(default="")  # 🔼
+    premium_emoji_low_id: str = Field(default="")  # 🔽
+    premium_emoji_mcap_id: str = Field(default="")  # 🏛
+    premium_emoji_volume_id: str = Field(default="")  # 📊
+    premium_emoji_globe_id: str = Field(default="")  # 🌐 — /market header
+    premium_emoji_btc_id: str = Field(default="")  # 🟠 — BTC dominance
+    premium_emoji_coins_id: str = Field(default="")  # 🪙 — active coins
+    premium_emoji_fng_id: str = Field(default="")  # 😱/😨/😐/🙂/🤑 — Fear & Greed
+    premium_emoji_top_id: str = Field(default="")  # 📈 — /top header
+    premium_emoji_news_id: str = Field(default="")  # 📰 — /news header
+
     log_level: str = Field(default="INFO")
 
     @property

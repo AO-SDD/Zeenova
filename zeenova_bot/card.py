@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from html import escape
 
+from .emojis import PremiumEmojis, default_premium_emojis
 from .services import MarketData
 
 
@@ -40,7 +41,9 @@ def _fmt_change(pct: float | None) -> str:
     return f"{sign}{pct:.2f}%"
 
 
-def render_price_card(md: MarketData) -> str:
+def render_price_card(
+    md: MarketData, emojis: PremiumEmojis | None = None
+) -> str:
     """Build the HTML message body for a price card.
 
     Layout mirrors the reference screenshot: a coloured ticker header,
@@ -48,11 +51,17 @@ def render_price_card(md: MarketData) -> str:
     The channel + chat shortcuts that used to sit at the bottom are now
     attached as inline keyboard buttons by the caller, so the text body
     stays focused on the data.
+
+    ``emojis`` lets the caller substitute one or more in-body emojis
+    with Telegram Premium custom emojis. When ``None``, the default
+    plain emojis are used.
     """
+    if emojis is None:
+        emojis = default_premium_emojis()
     pct = md.price_change_pct_24h
     is_up = pct is None or pct >= 0
-    header_dot = "🟢" if is_up else "🔴"
-    change_dot = "🟢" if is_up else "🔴"
+    header_dot = emojis.up if is_up else emojis.down
+    change_dot = emojis.up if is_up else emojis.down
     # Off-exchange pairs already arrive with a slash (e.g. "OCT/USD") so
     # we just trust whatever ``md.pair`` says when the slash is present.
     # Exchange pairs are concatenated (e.g. "BTCUSDT") and need a friendlier
@@ -77,15 +86,15 @@ def render_price_card(md: MarketData) -> str:
         "",
     ]
     if md.market_cap_rank is not None and md.market_cap_rank > 0:
-        lines.append(f"🏆 <b>Rank:</b> No: #{md.market_cap_rank}")
+        lines.append(f"{emojis.rank} <b>Rank:</b> No: #{md.market_cap_rank}")
     lines.extend(
         [
-            f"💵 <b>Price:</b> {escape(price_str)}",
+            f"{emojis.price} <b>Price:</b> {escape(price_str)}",
             f"{change_dot} <b>24H Change:</b> {escape(change_str)}",
-            f"🔼 <b>24H High:</b> {escape(high_str)}",
-            f"🔽 <b>24H Low:</b> {escape(low_str)}",
-            f"🏛 <b>Marketcap:</b> {escape(cap_str)}",
-            f"📊 <b>24H Volume:</b> {escape(vol_str)}",
+            f"{emojis.high} <b>24H High:</b> {escape(high_str)}",
+            f"{emojis.low} <b>24H Low:</b> {escape(low_str)}",
+            f"{emojis.mcap} <b>Marketcap:</b> {escape(cap_str)}",
+            f"{emojis.volume} <b>24H Volume:</b> {escape(vol_str)}",
         ]
     )
     return "\n".join(lines)
