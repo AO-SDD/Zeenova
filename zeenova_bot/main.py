@@ -124,8 +124,19 @@ def main() -> None:
         "(sources: Binance + Bybit + MEXC, marketcap: CoinPaprika -> CoinGecko cached, "
         "fx: fawazahmed0/currency-api)"
     )
+    # ``edited_message`` is required for edit-to-edit replies: when the
+    # user edits a calc/price-card message we re-run the handler and
+    # edit the bot's previous reply in place (see
+    # :func:`zeenova_bot.handlers.on_edited_text`). Telegram does NOT
+    # deliver edited messages unless the bot explicitly subscribes to
+    # them via ``allowed_updates``.
     app.run_polling(
-        allowed_updates=["message", "callback_query", "inline_query"]
+        allowed_updates=[
+            "message",
+            "edited_message",
+            "callback_query",
+            "inline_query",
+        ]
     )
 
 
