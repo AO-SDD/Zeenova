@@ -14,6 +14,7 @@ from .bybit import BybitClient
 from .coingecko import MarketcapClient as CoinGeckoMarketcap
 from .coinpaprika import CoinPaprikaClient
 from .config import load_settings
+from .etherscan import EtherscanClient
 from .fear_greed import FearGreedClient
 from .fx import FxClient
 from .handlers import build_application
@@ -32,6 +33,8 @@ _BOT_COMMANDS: tuple[BotCommand, ...] = (
     BotCommand("market", "Global marketcap, BTC dominance, Fear & Greed"),
     BotCommand("top", "Today's top gainers and losers"),
     BotCommand("news", "Latest crypto headlines"),
+    BotCommand("ath", "All-time high / low for a coin (e.g. /ath btc)"),
+    BotCommand("wallet", "Ethereum wallet summary (e.g. /wallet 0x…)"),
     BotCommand("help", "How to use the bot"),
 )
 
@@ -70,6 +73,7 @@ def main() -> None:
     fear_greed = FearGreedClient()
     quote_sticker = QuoteStickerClient()
     news = NewsClient()
+    etherscan = EtherscanClient(api_key=settings.etherscan_api_key)
 
     app = build_application(settings, service, fx)
     # /top and /market need the raw CoinPaprika client (the rest of the
@@ -83,6 +87,11 @@ def main() -> None:
     # /news pulls latest headlines from a few mainstream crypto outlets'
     # public RSS feeds and dedupes them client-side.
     app.bot_data["news"] = news
+    # /ath calls CoinGecko directly for ATH/ATL data (one shared client
+    # with marketcap; the cache is keyed separately).
+    app.bot_data["coingecko"] = coingecko
+    # /wallet uses Etherscan V2 (one key, 60+ chains, only ETH for now).
+    app.bot_data["etherscan"] = etherscan
 
     async def _post_init(application: Application) -> None:  # type: ignore[type-arg]
         # Publish the slash-command menu so Telegram's native autocomplete
@@ -114,6 +123,7 @@ def main() -> None:
         await fear_greed.aclose()
         await quote_sticker.aclose()
         await news.aclose()
+        await etherscan.aclose()
 
     # PTB v21 exposes ``post_init`` / ``post_shutdown`` as configurable hooks.
     app.post_init = _post_init
