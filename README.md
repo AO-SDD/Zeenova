@@ -41,10 +41,15 @@ Built for the **Zeen** community channels:
 - `/ath SYMBOL` — all-time-high / all-time-low snapshot for any coin:
   ATH price + date + how far below ATH the current price sits, plus the
   same for ATL. Sourced from CoinGecko, cached for an hour per coin.
-- `/wallet 0x…` — Ethereum wallet summary: ETH balance, USD value,
-  outgoing tx count, last activity, and the 5 most recent transactions
-  with counterparty and amount. Powered by the free Etherscan V2 API
-  (one key works across 60+ chains; only ETH mainnet for now).
+- `/wallet 0x…` — multichain wallet summary: native-token balance and
+  USD value on Ethereum, BSC, Polygon, Arbitrum, Optimism, Base and
+  Avalanche, with a combined total and the 5 most recent transactions
+  on the wallet's most-active chain. Powered by the free Etherscan V2
+  API (one key, 60+ chains).
+- `/gas` — live gas oracle rates (Safe / Standard / Fast in gwei) on
+  every supported chain, each tier annotated with an approximate USD
+  cost for a 21k-gas native transfer. Uses the same Etherscan V2 key
+  as `/wallet`; results are cached for 20 s per chain.
 
 ### Calculator & conversions
 - Plain math with full operator precedence: `2+3*4`, `(1+2)*3`, `2^10`,
@@ -118,7 +123,10 @@ everywhere.
 |---|---|---|---|
 | `TELEGRAM_BOT_TOKEN` | yes | — | Token from BotFather. |
 | `COINGECKO_API_KEY` | no | empty | Optional Pro key. |
-| `ETHERSCAN_API_KEY` | no | empty | Etherscan V2 key (free at [etherscan.io/apis](https://etherscan.io/apis)) — powers the `/wallet` command. Without it the bot replies with a short setup hint when `/wallet` is invoked. |
+| `ETHERSCAN_API_KEY` | no | empty | Etherscan V2 key (free at [etherscan.io/apis](https://etherscan.io/apis)) — powers `/wallet` and `/gas`. Without it the bot replies with a short setup hint when either command is invoked. |
+| `PREMIUM_EMOJI_ATH_*_ID`, `PREMIUM_EMOJI_DIAMOND_ID`, `PREMIUM_EMOJI_DATE_ID`, `PREMIUM_EMOJI_PCT_DOWN_ID` | no | empty | Premium custom-emoji IDs for the `/ath` card. See `.env.example` for the full list. |
+| `PREMIUM_EMOJI_WALLET_ID`, `PREMIUM_EMOJI_CLOCK_ID` | no | empty | Premium custom-emoji IDs for the `/wallet` header and recent-transactions section. |
+| `PREMIUM_EMOJI_GAS_ID` | no | empty | Premium custom-emoji ID for the `/gas` header. |
 | `ALLOWED_CHAT_IDS` | no | empty | Comma-separated chat IDs. |
 | `BRAND_NAME` | no | `Zeenova` | Watermark on chart + F&G dial. |
 | `CHANNEL_NAME` | no | `Zeen Channel` | Label on the channel shortcut button. |
