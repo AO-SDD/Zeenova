@@ -144,6 +144,10 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+> For a full step-by-step deployment guide (Docker, AWS EC2, plain
+> Linux + systemd, local dev, Premium-emoji setup, updates, logs,
+> troubleshooting) see [DEPLOYMENT.md](DEPLOYMENT.md).
+
 ## Development
 
 ```bash
