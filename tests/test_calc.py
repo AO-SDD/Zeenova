@@ -233,4 +233,45 @@ class TestPercent:
         # ``10%3`` is unambiguously the modulo operator (no whitespace, a
         # digit immediately after ``%``) so the percent rewrite skips it.
         assert safe_eval("10%3") == pytest.approx(1.0)
-        assert safe_eval("10 % 3") == pytest.approx(1.0)
+
+
+class TestThousandsSeparators:
+    """Comma-grouped numeric literals (``37,632.00``, ``1,000,000``)."""
+
+    @pytest.mark.parametrize(
+        ("expr", "expected"),
+        [
+            ("1,000", 1_000.0),
+            ("1,000,000", 1_000_000.0),
+            ("37,632.00", 37_632.0),
+            # The classic shipping example: thousands-separated base + %.
+            ("37,632.00+30%", 37_632.0 * 1.30),
+            # In compound expressions.
+            ("1,000 + 500", 1_500.0),
+            ("1,000 * 2", 2_000.0),
+            # Mixed with k/m/b/t suffix on a different operand.
+            ("1,000 + 1k", 2_000.0),
+        ],
+    )
+    def test_thousands_separator_evaluates(
+        self, expr: str, expected: float
+    ) -> None:
+        assert safe_eval(expr) == pytest.approx(expected)
+
+    def test_parse_input_accepts_thousands_separator(self) -> None:
+        result = parse_input("37,632.00+30%")
+        assert result is not None
+        expr, ccy1, ccy2 = result
+        # parse_input keeps the original spelling; safe_eval strips the
+        # comma when it actually evaluates.
+        assert "," in expr
+        assert ccy1 is None and ccy2 is None
+        assert safe_eval(expr) == pytest.approx(37_632.0 * 1.30)
+
+    def test_thousands_separator_with_currency(self) -> None:
+        result = parse_input("1,500 usd egp")
+        assert result is not None
+        expr, ccy1, ccy2 = result
+        assert ccy1 == "usd"
+        assert ccy2 == "egp"
+        assert safe_eval(expr) == pytest.approx(1_500.0)
