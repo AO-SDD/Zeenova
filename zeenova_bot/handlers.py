@@ -1308,11 +1308,55 @@ async def _send_card(
     )
 
 
+# Unicode "Mathematical Sans-Serif Bold" code-point bases. Telegram
+# inline-keyboard button labels are plain strings — there's no HTML/MD
+# parse_mode — so the only way to render the name in bold is to swap
+# each ASCII letter/digit for its bold-look-alike in this block.
+# Modern Telegram clients render these glyphs as a clean bold sans-serif
+# on every platform (iOS/Android/Desktop/Web).
+_BOLD_UPPER_BASE = 0x1D5D4  # '𝗔'
+_BOLD_LOWER_BASE = 0x1D5EE  # '𝗮'
+_BOLD_DIGIT_BASE = 0x1D7EC  # '𝟬'
+
+
+def _bold_label(text: str) -> str:
+    """Return ``text`` with ASCII letters and digits promoted to
+    Unicode sans-serif bold so the label looks heavier inside an
+    inline-keyboard button.
+
+    Spaces, punctuation, emoji and any non-ASCII characters pass
+    through unchanged so the function is safe to call on labels that
+    already contain emoji or Arabic text.
+    """
+    out: list[str] = []
+    for ch in text:
+        code = ord(ch)
+        if 0x41 <= code <= 0x5A:  # 'A'..'Z'
+            out.append(chr(_BOLD_UPPER_BASE + code - 0x41))
+        elif 0x61 <= code <= 0x7A:  # 'a'..'z'
+            out.append(chr(_BOLD_LOWER_BASE + code - 0x61))
+        elif 0x30 <= code <= 0x39:  # '0'..'9'
+            out.append(chr(_BOLD_DIGIT_BASE + code - 0x30))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def _brand_button(
-    text: str, *, url: str, custom_emoji_id: str
+    name: str,
+    *,
+    fallback_emoji: str,
+    url: str,
+    custom_emoji_id: str,
 ) -> InlineKeyboardButton:
-    """Build a single brand-row button, optionally decorated with a
-    Telegram Premium custom emoji.
+    """Build a single brand-row button.
+
+    The label is always rendered in Unicode bold for visual weight.
+    When ``custom_emoji_id`` is non-empty, ``icon_custom_emoji_id`` is
+    attached and the leading ``fallback_emoji`` is omitted from the
+    text so we don't show two emojis side by side. With no custom
+    emoji configured, the fallback emoji stays in front of the name as
+    a visual marker.
 
     Bot API 9.4 (Feb 9 2026) added ``icon_custom_emoji_id`` to
     ``InlineKeyboardButton``. PTB 21.6 doesn't expose it as a named
@@ -1322,15 +1366,15 @@ def _brand_button(
     Fragment-purchased username); without that the Telegram server
     ignores the field, so the empty fallback is always safe.
     """
-    api_kwargs: dict[str, str] = {}
+    bold_name = _bold_label(name)
     cleaned = custom_emoji_id.strip()
     if cleaned:
-        api_kwargs["icon_custom_emoji_id"] = cleaned
-    return InlineKeyboardButton(
-        text,
-        url=url,
-        api_kwargs=api_kwargs or None,
-    )
+        text = bold_name
+        api_kwargs: dict[str, str] | None = {"icon_custom_emoji_id": cleaned}
+    else:
+        text = f"{fallback_emoji} {bold_name}"
+        api_kwargs = None
+    return InlineKeyboardButton(text, url=url, api_kwargs=api_kwargs)
 
 
 def _brand_buttons(settings: Settings) -> list[InlineKeyboardButton]:
@@ -1339,17 +1383,20 @@ def _brand_buttons(settings: Settings) -> list[InlineKeyboardButton]:
     Returned as a flat list so callers can compose them with their own
     rows (e.g. timeframe buttons above brand buttons on price cards).
     When ``BRAND_CHANNEL_EMOJI_ID`` / ``BRAND_GROUP_EMOJI_ID`` are set
-    in the environment, each button is prefixed with the corresponding
-    Telegram Premium custom emoji.
+    in the environment, each button shows the corresponding Telegram
+    Premium custom emoji as its leading icon and drops the fallback
+    text emoji (📣 / 💬) to avoid duplicate-icon clutter.
     """
     return [
         _brand_button(
-            f"📣 {settings.channel_name}",
+            settings.channel_name,
+            fallback_emoji="📣",
             url=settings.telegram_channel_url,
             custom_emoji_id=settings.brand_channel_emoji_id,
         ),
         _brand_button(
-            f"💬 {settings.group_name}",
+            settings.group_name,
+            fallback_emoji="💬",
             url=settings.telegram_group_url,
             custom_emoji_id=settings.brand_group_emoji_id,
         ),

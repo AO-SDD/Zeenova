@@ -1272,17 +1272,24 @@ def _last_reply_kwargs(msg: MagicMock) -> dict[str, object]:
 
 def _assert_brand_keyboard(markup: object) -> None:
     """Assert ``markup`` is an InlineKeyboardMarkup whose last row has
-    a 📣 Channel button and a 💬 Chat button with the configured URLs."""
+    a Channel button and a Chat button with the configured URLs.
+
+    Labels go through the Unicode sans-serif bold transform, so the
+    plain ASCII names won't appear verbatim — they're checked via the
+    bolded form (``𝗭𝗲𝗲𝗻 𝗖𝗵𝗮𝗻𝗻𝗲𝗹`` etc.).
+    """
     from telegram import InlineKeyboardMarkup
+
+    from zeenova_bot.handlers import _bold_label
 
     assert isinstance(markup, InlineKeyboardMarkup)
     rows = list(markup.inline_keyboard)
     brand_row = rows[-1]
     assert len(brand_row) == 2
     channel_btn, chat_btn = brand_row
-    assert "Zeen Channel" in channel_btn.text
+    assert _bold_label("Zeen Channel") in channel_btn.text
     assert channel_btn.url == "https://t.me/ox_zeen"
-    assert "Zeen Chat" in chat_btn.text
+    assert _bold_label("Zeen Chat") in chat_btn.text
     assert chat_btn.url == "https://t.me/blockzeen"
 
 
@@ -1480,3 +1487,48 @@ async def test_cmd_emojiid_dedupes_repeated_ids() -> None:
     await cmd_emojiid(update, context)
     body = _last_reply(update.effective_message)
     assert body.count(eid) == 1
+
+
+# ---------------------------------------------------------------------------
+# Bold-label transform + duplicate-emoji stripping on brand buttons
+# ---------------------------------------------------------------------------
+
+
+def test_bold_label_promotes_ascii_to_sans_serif_bold() -> None:
+    """ASCII letters and digits map to Unicode sans-serif bold; spaces
+    and non-ASCII characters pass through unchanged."""
+    from zeenova_bot.handlers import _bold_label
+
+    assert _bold_label("Zeen Channel") == "𝗭𝗲𝗲𝗻 𝗖𝗵𝗮𝗻𝗻𝗲𝗹"
+    assert _bold_label("ABC 123 xyz") == "𝗔𝗕𝗖 𝟭𝟮𝟯 𝘅𝘆𝘇"
+    # Emoji and Arabic pass through unchanged.
+    assert _bold_label("hi! 📣 مرحبا") == "𝗵𝗶! 📣 مرحبا"
+
+
+@pytest.mark.asyncio
+async def test_brand_buttons_drop_fallback_emoji_when_premium_icon_set() -> None:
+    """With a Premium emoji configured, the leading 📣 / 💬 are removed
+    from the label so the button doesn't show two icons in a row."""
+    from zeenova_bot.handlers import _bold_label, _brand_buttons
+
+    settings = _settings()
+    settings.brand_channel_emoji_id = "6260052174089229782"
+    settings.brand_group_emoji_id = "6159083200971805825"
+    channel_btn, chat_btn = _brand_buttons(settings)
+    assert channel_btn.text == _bold_label("Zeen Channel")
+    assert "📣" not in channel_btn.text
+    assert chat_btn.text == _bold_label("Zeen Chat")
+    assert "💬" not in chat_btn.text
+
+
+@pytest.mark.asyncio
+async def test_brand_buttons_keep_fallback_emoji_without_premium_icon() -> None:
+    """Without a Premium icon, the fallback emoji stays as the visual
+    marker so plain-token users still see something in front of the
+    name."""
+    from zeenova_bot.handlers import _bold_label, _brand_buttons
+
+    settings = _settings()
+    channel_btn, chat_btn = _brand_buttons(settings)
+    assert channel_btn.text == f"📣 {_bold_label('Zeen Channel')}"
+    assert chat_btn.text == f"💬 {_bold_label('Zeen Chat')}"
