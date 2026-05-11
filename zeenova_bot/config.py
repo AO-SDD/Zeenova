@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     # the corresponding emoji at its default look.
     premium_emoji_up_id: str = Field(default="")  # 🟢
     premium_emoji_down_id: str = Field(default="")  # 🔴
+    # Optional override for the 24H Change line specifically. When set,
+    # the price card uses this single Premium custom emoji on the
+    # 24H Change row regardless of whether the 24h move is positive or
+    # negative — the header dot keeps using the up/down pair above.
+    # When blank, the 24H Change row falls back to the same up/down
+    # logic as the header dot.
+    premium_emoji_change_id: str = Field(default="")
     premium_emoji_rank_id: str = Field(default="")  # 🏆
     premium_emoji_price_id: str = Field(default="")  # 💵
     premium_emoji_high_id: str = Field(default="")  # 🔼
