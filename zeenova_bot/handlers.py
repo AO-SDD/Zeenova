@@ -44,6 +44,7 @@ from .card import render_price_card
 from .chart import render_candles
 from .coinpaprika import CoinPaprikaClient, GlobalSnapshot, TickerSnapshot
 from .config import Settings
+from .emojis import PremiumEmojis, premium_emoji
 from .fear_greed import FearGreed, FearGreedClient, render_dial
 from .fx import FxClient
 from .news import NewsArticle, NewsClient
@@ -330,32 +331,67 @@ def _fear_greed_emoji(value: int) -> str:
     return "🤑"  # Extreme Greed
 
 
+def _resolve_premium_emojis(settings: Settings) -> PremiumEmojis:
+    """Build a :class:`PremiumEmojis` from the current ``Settings``.
+
+    Each slot is wrapped in a ``<tg-emoji>`` tag when the corresponding
+    ``PREMIUM_EMOJI_*_ID`` env var is non-empty; otherwise the plain
+    fallback emoji is used.
+    """
+    return PremiumEmojis(
+        up=premium_emoji("🟢", settings.premium_emoji_up_id),
+        down=premium_emoji("🔴", settings.premium_emoji_down_id),
+        rank=premium_emoji("🏆", settings.premium_emoji_rank_id),
+        price=premium_emoji("💵", settings.premium_emoji_price_id),
+        high=premium_emoji("🔼", settings.premium_emoji_high_id),
+        low=premium_emoji("🔽", settings.premium_emoji_low_id),
+        mcap=premium_emoji("🏛", settings.premium_emoji_mcap_id),
+        volume=premium_emoji("📊", settings.premium_emoji_volume_id),
+        globe=premium_emoji("🌐", settings.premium_emoji_globe_id),
+        btc=premium_emoji("🟠", settings.premium_emoji_btc_id),
+        coins=premium_emoji("🪙", settings.premium_emoji_coins_id),
+        top=premium_emoji("📈", settings.premium_emoji_top_id),
+        news=premium_emoji("📰", settings.premium_emoji_news_id),
+    )
+
+
 def _render_market(
     snap: GlobalSnapshot,
     brand_name: str,
     *,
     fear_greed: FearGreed | None = None,
+    emojis: PremiumEmojis,
+    fng_id: str = "",
 ) -> str:
     """HTML body for ``/market``."""
     lines = [
-        f"<b>🌐 {escape(brand_name)} — Global market</b>",
+        f"<b>{emojis.globe} {escape(brand_name)} — Global market</b>",
         "",
-        f"🏛 <b>Total marketcap:</b> {_fmt_usd_compact(snap.market_cap_usd)} "
+        f"{emojis.mcap} <b>Total marketcap:</b> "
+        f"{_fmt_usd_compact(snap.market_cap_usd)} "
         f"({_fmt_change_pct(snap.market_cap_change_24h_pct)} 24h)",
-        f"📊 <b>24H Volume:</b> {_fmt_usd_compact(snap.volume_24h_usd)}",
+        f"{emojis.volume} <b>24H Volume:</b> "
+        f"{_fmt_usd_compact(snap.volume_24h_usd)}",
     ]
     if snap.bitcoin_dominance_pct is not None:
         lines.append(
-            f"🟠 <b>BTC dominance:</b> {snap.bitcoin_dominance_pct:.2f}%"
+            f"{emojis.btc} <b>BTC dominance:</b> "
+            f"{snap.bitcoin_dominance_pct:.2f}%"
         )
     if snap.cryptocurrencies_number is not None:
         lines.append(
-            f"🪙 <b>Active coins:</b> {snap.cryptocurrencies_number:,}"
+            f"{emojis.coins} <b>Active coins:</b> "
+            f"{snap.cryptocurrencies_number:,}"
         )
     if fear_greed is not None:
-        emoji = _fear_greed_emoji(fear_greed.value)
+        face = _fear_greed_emoji(fear_greed.value)
+        # F&G face is dynamic (5 possible glyphs). We wrap the live
+        # face in the configured Premium custom-emoji tag so the
+        # fallback shown to non-Premium clients still matches the
+        # current index value.
+        face_html = premium_emoji(face, fng_id)
         lines.append(
-            f"{emoji} <b>Fear &amp; Greed:</b> {fear_greed.value}/100 "
+            f"{face_html} <b>Fear &amp; Greed:</b> {fear_greed.value}/100 "
             f"<i>({escape(fear_greed.classification)})</i>"
         )
     return "\n".join(lines)
@@ -366,6 +402,7 @@ def _render_top(
     losers: list[TickerSnapshot],
     *,
     universe: int,
+    emojis: PremiumEmojis,
 ) -> str:
     """HTML body for ``/top``: top gainers + top losers in 24h."""
 
@@ -380,11 +417,14 @@ def _render_top(
             )
         return out
 
-    lines = [f"<b>📈 Top movers — last 24h (top {universe} by mcap)</b>", ""]
-    lines.append("🟢 <b>Gainers</b>")
+    lines = [
+        f"<b>{emojis.top} Top movers — last 24h (top {universe} by mcap)</b>",
+        "",
+    ]
+    lines.append(f"{emojis.up} <b>Gainers</b>")
     lines.extend(_rows(gainers) or ["  —"])
     lines.append("")
-    lines.append("🔴 <b>Losers</b>")
+    lines.append(f"{emojis.down} <b>Losers</b>")
     lines.extend(_rows(losers) or ["  —"])
     return "\n".join(lines)
 
@@ -437,8 +477,13 @@ async def cmd_market(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             parse_mode=ParseMode.HTML,
         )
         return
+    emojis = _resolve_premium_emojis(settings)
     body = _render_market(
-        snap, brand_name=settings.brand_name, fear_greed=fng
+        snap,
+        brand_name=settings.brand_name,
+        fear_greed=fng,
+        emojis=emojis,
+        fng_id=settings.premium_emoji_fng_id,
     )
     if fng is not None:
         # Render the dial in-process so the picture and the caption value
@@ -497,8 +542,11 @@ async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     losers = by_change[:_TOP_N]
     gainers = list(reversed(by_change[-_TOP_N:]))
     settings: Settings = context.bot_data["settings"]
+    emojis = _resolve_premium_emojis(settings)
     await msg.reply_text(
-        _render_top(gainers, losers, universe=_TOP_UNIVERSE),
+        _render_top(
+            gainers, losers, universe=_TOP_UNIVERSE, emojis=emojis
+        ),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
         reply_markup=_brand_keyboard(settings),
@@ -511,9 +559,17 @@ async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 _NEWS_LIMIT: Final[int] = 6
 
 
-def _render_news(articles: list[NewsArticle], brand_name: str) -> str:
+def _render_news(
+    articles: list[NewsArticle],
+    brand_name: str,
+    *,
+    emojis: PremiumEmojis,
+) -> str:
     """HTML body for ``/news`` — a compact, link-rich headline digest."""
-    lines = [f"<b>📰 {escape(brand_name)} — latest crypto news</b>", ""]
+    lines = [
+        f"<b>{emojis.news} {escape(brand_name)} — latest crypto news</b>",
+        "",
+    ]
     for art in articles:
         title = escape(art.title)
         # Each item is a single line: the title is the clickable link
@@ -553,8 +609,9 @@ async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
     settings: Settings = context.bot_data["settings"]
+    emojis = _resolve_premium_emojis(settings)
     await msg.reply_text(
-        _render_news(articles, settings.brand_name),
+        _render_news(articles, settings.brand_name, emojis=emojis),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
         reply_markup=_brand_keyboard(settings),
@@ -1073,7 +1130,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         timeframe=tf,
         brand_name=settings.brand_name,
     )
-    caption = render_price_card(md)
+    caption = render_price_card(md, _resolve_premium_emojis(settings))
     keyboard = _build_keyboard(ref=ref, active=tf, settings=settings)
     try:
         await query.edit_message_media(
@@ -1209,7 +1266,7 @@ async def on_inline_query(
         await iq.answer([], cache_time=_INLINE_CACHE_SECONDS, is_personal=False)
         return
 
-    body = render_price_card(md)
+    body = render_price_card(md, _resolve_premium_emojis(settings))
     result = InlineQueryResultArticle(
         # Stable per (symbol, source) so Telegram dedups multiple users
         # picking the same suggestion within the cache window.
@@ -1269,7 +1326,7 @@ async def _send_card(
                 parse_mode=ParseMode.HTML,
             )
             return
-        caption = render_price_card(md)
+        caption = render_price_card(md, _resolve_premium_emojis(settings))
         await msg.reply_text(
             caption,
             parse_mode=ParseMode.HTML,
@@ -1296,7 +1353,7 @@ async def _send_card(
         timeframe=timeframe,
         brand_name=settings.brand_name,
     )
-    caption = render_price_card(md)
+    caption = render_price_card(md, _resolve_premium_emojis(settings))
     keyboard = _build_keyboard(ref=ref, active=timeframe, settings=settings)
     await context.bot.send_photo(
         chat_id=chat.id,

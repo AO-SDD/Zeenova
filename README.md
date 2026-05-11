@@ -112,6 +112,20 @@ everywhere.
 | `TELEGRAM_GROUP_URL` | no | `https://t.me/blockzeen` | URL behind the chat button. |
 | `BRAND_CHANNEL_EMOJI_ID` | no | empty | Telegram Premium custom-emoji ID rendered on the channel button. Requires the bot owner to have Telegram Premium. Use `/emojiid` (reply to a message containing the emoji) to discover the ID. When set, the fallback 📣 emoji is dropped from the label so the button only shows the Premium icon. |
 | `BRAND_GROUP_EMOJI_ID` | no | empty | Telegram Premium custom-emoji ID rendered on the chat button. Same Premium requirement as above. When set, the fallback 💬 emoji is dropped from the label. |
+| `PREMIUM_EMOJI_UP_ID` | no | empty | Premium custom-emoji ID for 🟢 (positive 24h change / Gainers). Same Premium requirement as the brand buttons. Use `/emojiid` to discover. |
+| `PREMIUM_EMOJI_DOWN_ID` | no | empty | Premium custom-emoji ID for 🔴 (negative 24h change / Losers). |
+| `PREMIUM_EMOJI_RANK_ID` | no | empty | Premium custom-emoji ID for 🏆 (coin rank line). |
+| `PREMIUM_EMOJI_PRICE_ID` | no | empty | Premium custom-emoji ID for 💵 (Price line). |
+| `PREMIUM_EMOJI_HIGH_ID` | no | empty | Premium custom-emoji ID for 🔼 (24H High line). |
+| `PREMIUM_EMOJI_LOW_ID` | no | empty | Premium custom-emoji ID for 🔽 (24H Low line). |
+| `PREMIUM_EMOJI_MCAP_ID` | no | empty | Premium custom-emoji ID for 🏛 (Marketcap line). |
+| `PREMIUM_EMOJI_VOLUME_ID` | no | empty | Premium custom-emoji ID for 📊 (24H Volume line). |
+| `PREMIUM_EMOJI_GLOBE_ID` | no | empty | Premium custom-emoji ID for 🌐 (`/market` header). |
+| `PREMIUM_EMOJI_BTC_ID` | no | empty | Premium custom-emoji ID for 🟠 (BTC dominance line). |
+| `PREMIUM_EMOJI_COINS_ID` | no | empty | Premium custom-emoji ID for 🪙 (Active coins line). |
+| `PREMIUM_EMOJI_FNG_ID` | no | empty | Premium custom-emoji ID for the Fear & Greed face (one ID covers all five glyphs 😱/😨/😐/🙂/🤑). |
+| `PREMIUM_EMOJI_TOP_ID` | no | empty | Premium custom-emoji ID for 📈 (`/top` header). |
+| `PREMIUM_EMOJI_NEWS_ID` | no | empty | Premium custom-emoji ID for 📰 (`/news` header). |
 | `LOG_LEVEL` | no | `INFO` | Standard Python logging level. |
 
 ## Docker
