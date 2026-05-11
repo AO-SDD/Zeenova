@@ -8,7 +8,7 @@ import contextlib
 import io
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from functools import partial
@@ -49,8 +49,16 @@ from .coingecko import MarketcapClient as CoinGeckoMarketcap
 from .coinpaprika import CoinPaprikaClient, GlobalSnapshot, TickerSnapshot
 from .config import Settings
 from .edit_state import EditableReplyStore, ReplyKind
-from .emojis import PremiumEmojis, premium_emoji
-from .etherscan import EtherscanClient, WalletInfo, WalletTx, is_valid_address
+from .emojis import PremiumEmojis, default_premium_emojis, premium_emoji
+from .etherscan import (
+    CHAINS,
+    ChainBalance,
+    ChainGas,
+    EtherscanClient,
+    WalletInfo,
+    WalletTx,
+    is_valid_address,
+)
 from .fear_greed import FearGreed, FearGreedClient, render_dial
 from .fx import FxClient
 from .news import NewsArticle, NewsClient
@@ -156,8 +164,11 @@ def _help_text(settings: Settings) -> str:
         "outlets (CoinDesk, Cointelegraph, Decrypt).\n"
         "• <code>/ath SYMBOL</code> — all-time-high and all-time-low "
         "records (e.g. <code>/ath btc</code>).\n"
-        "• <code>/wallet 0x…</code> — Ethereum wallet summary: balance, "
-        "USD value, recent transactions.\n\n"
+        "• <code>/wallet 0x…</code> — multichain wallet summary: native "
+        "balance + USD on Ethereum, BSC, Polygon, Arbitrum, Optimism, "
+        "Base &amp; Avalanche.\n"
+        "• <code>/gas</code> — live gas rates across every supported "
+        "chain with a USD estimate per tier.\n\n"
         "<b>🧮 Calculator &amp; conversion</b>\n"
         "• Plain math with full operator precedence — "
         "<code>2+2/4</code>, <code>(1+2)*3</code>, <code>2^10</code>, "
@@ -243,6 +254,7 @@ def build_application(
     app.add_handler(CommandHandler(["news"], cmd_news))
     app.add_handler(CommandHandler(["ath"], cmd_ath))
     app.add_handler(CommandHandler(["wallet", "addr"], cmd_wallet))
+    app.add_handler(CommandHandler(["gas"], cmd_gas))
     app.add_handler(CommandHandler(["emojiid"], cmd_emojiid))
     app.add_handler(
         MessageHandler(
@@ -391,6 +403,15 @@ def _resolve_premium_emojis(settings: Settings) -> PremiumEmojis:
         coins=premium_emoji("🪙", settings.premium_emoji_coins_id),
         top=premium_emoji("📈", settings.premium_emoji_top_id),
         news=premium_emoji("📰", settings.premium_emoji_news_id),
+        ath_header=premium_emoji("🏆", settings.premium_emoji_ath_header_id),
+        diamond=premium_emoji("💎", settings.premium_emoji_diamond_id),
+        ath_up=premium_emoji("🚀", settings.premium_emoji_ath_up_id),
+        ath_down=premium_emoji("🩸", settings.premium_emoji_ath_down_id),
+        date=premium_emoji("📅", settings.premium_emoji_date_id),
+        pct_down=premium_emoji("📉", settings.premium_emoji_pct_down_id),
+        wallet=premium_emoji("🔍", settings.premium_emoji_wallet_id),
+        clock=premium_emoji("🕐", settings.premium_emoji_clock_id),
+        gas=premium_emoji("⛽", settings.premium_emoji_gas_id),
     )
 
 
@@ -709,8 +730,13 @@ def _fmt_iso_date(value: str) -> str:
     return parsed.strftime("%b %-d, %Y")
 
 
-def _render_ath(snap: AthAtl, brand_name: str) -> str:
+def _render_ath(
+    snap: AthAtl,
+    brand_name: str,
+    emojis: PremiumEmojis | None = None,
+) -> str:
     """HTML body for ``/ath``: ATH/ATL snapshot with relative dates."""
+    e = emojis if emojis is not None else default_premium_emojis()
     now = int(datetime.now(UTC).timestamp())
     ath_dt = _parse_iso_ts(snap.ath_date)
     atl_dt = _parse_iso_ts(snap.atl_date)
@@ -721,26 +747,26 @@ def _render_ath(snap: AthAtl, brand_name: str) -> str:
         _humanize_age(now, int(atl_dt.timestamp())) if atl_dt is not None else "—"
     )
     rank_line = (
-        f"📊 <b>Rank:</b> #{snap.rank}\n" if snap.rank is not None else ""
+        f"{e.rank} <b>Rank:</b> #{snap.rank}\n" if snap.rank is not None else ""
     )
     return (
-        f"🏆 <b>{escape(snap.name)} ({escape(snap.symbol)})</b> — "
+        f"{e.ath_header} <b>{escape(snap.name)} ({escape(snap.symbol)})</b> — "
         f"<i>All-Time Records</i>\n"
         f"\n"
-        f"💎 <b>Current:</b> {escape(_fmt_unit_price(snap.current_price))}\n"
+        f"{e.diamond} <b>Current:</b> {escape(_fmt_unit_price(snap.current_price))}\n"
         f"{rank_line}"
         f"\n"
-        f"🚀 <b>All-Time High</b>\n"
+        f"{e.ath_up} <b>All-Time High</b>\n"
         f"  {escape(_fmt_unit_price(snap.ath))}\n"
-        f"  📅 {escape(_fmt_iso_date(snap.ath_date))} "
+        f"  {e.date} {escape(_fmt_iso_date(snap.ath_date))} "
         f"<i>({escape(ath_ago)})</i>\n"
-        f"  📉 <b>{_fmt_change_pct(snap.ath_change_pct)}</b> from ATH\n"
+        f"  {e.pct_down} <b>{_fmt_change_pct(snap.ath_change_pct)}</b> from ATH\n"
         f"\n"
-        f"🩸 <b>All-Time Low</b>\n"
+        f"{e.ath_down} <b>All-Time Low</b>\n"
         f"  {escape(_fmt_unit_price(snap.atl))}\n"
-        f"  📅 {escape(_fmt_iso_date(snap.atl_date))} "
+        f"  {e.date} {escape(_fmt_iso_date(snap.atl_date))} "
         f"<i>({escape(atl_ago)})</i>\n"
-        f"  🚀 <b>{_fmt_change_pct(snap.atl_change_pct)}</b> from ATL\n"
+        f"  {e.ath_up} <b>{_fmt_change_pct(snap.atl_change_pct)}</b> from ATL\n"
         f"\n"
         f"<i>Data: CoinGecko · {escape(brand_name)}</i>"
     )
@@ -782,8 +808,9 @@ async def cmd_ath(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
     settings: Settings = context.bot_data["settings"]
+    emojis = _resolve_premium_emojis(settings)
     await msg.reply_text(
-        _render_ath(snap, settings.brand_name),
+        _render_ath(snap, settings.brand_name, emojis),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
         reply_markup=_brand_keyboard(settings),
@@ -791,7 +818,7 @@ async def cmd_ath(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ---------------------------------------------------------------------------
-# /wallet — Ethereum wallet summary via Etherscan V2.
+# /wallet — Multichain wallet summary via Etherscan V2.
 # ---------------------------------------------------------------------------
 
 
@@ -802,8 +829,10 @@ def _short_addr(address: str) -> str:
     return f"{address[:6]}…{address[-4:]}"
 
 
-def _fmt_eth(value: float) -> str:
-    """Format an ETH amount with magnitude-appropriate precision."""
+def _fmt_native(value: float) -> str:
+    """Format a native-token amount with magnitude-appropriate precision."""
+    if value >= 1_000_000:
+        return f"{value:,.2f}"
     if value >= 1000:
         return f"{value:,.2f}"
     if value >= 1:
@@ -815,56 +844,135 @@ def _fmt_eth(value: float) -> str:
     return f"{value:.8f}".rstrip("0").rstrip(".") or "0"
 
 
-def _render_wallet_tx(tx: WalletTx, now_ts: int) -> str:
+# Kept under the old name for any out-of-tree callers / tests; renderers
+# inside this module use :func:`_fmt_native` directly.
+_fmt_eth = _fmt_native
+
+
+def _render_wallet_tx(tx: WalletTx, native_symbol: str, now_ts: int) -> str:
     """One ``recent transactions`` line."""
-    eth = tx.value_wei / 10**18
+    amount = tx.value_wei / 10**18
     counterparty = tx.from_addr if tx.is_incoming else tx.to_addr
     arrow = "↙" if tx.is_incoming else "↗"
     sign = "+" if tx.is_incoming else "-"
     direction = "from" if tx.is_incoming else "to"
     age = _humanize_age(now_ts, tx.timestamp)
     return (
-        f"  {arrow} <code>{sign}{escape(_fmt_eth(eth))} ETH</code> "
+        f"  {arrow} <code>{sign}{escape(_fmt_native(amount))} "
+        f"{escape(native_symbol)}</code> "
         f"{direction} <code>{escape(_short_addr(counterparty))}</code> "
         f"<i>({escape(age)})</i>"
     )
 
 
-def _render_wallet(info: WalletInfo, eth_usd: float | None, brand_name: str) -> str:
-    """HTML body for ``/wallet``."""
+def _render_wallet(
+    info: WalletInfo,
+    prices: dict[str, float],
+    brand_name: str,
+    emojis: PremiumEmojis | None = None,
+) -> str:
+    """HTML body for ``/wallet``.
+
+    ``prices`` maps a chain's ``price_symbol`` (e.g. ``"ETH"``,
+    ``"BNB"``) to its current USD price. Unknown / missing entries
+    just drop the USD column for that row.
+    """
+    e = emojis if emojis is not None else default_premium_emojis()
     now = int(datetime.now(UTC).timestamp())
+    nonzero: list[ChainBalance] = [cb for cb in info.balances if cb.balance_wei > 0]
+    total_usd = 0.0
+    for cb in nonzero:
+        px = prices.get(cb.chain.price_symbol, 0.0)
+        if px > 0:
+            total_usd += cb.balance * px
+
     lines: list[str] = [
-        f"🔍 <b>Wallet</b> <code>{escape(_short_addr(info.address))}</code>",
+        f"{e.wallet} <b>Wallet</b> <code>{escape(_short_addr(info.address))}</code>",
         "",
-        f"💎 <b>Balance:</b> <code>{escape(_fmt_eth(info.balance_eth))} ETH</code>",
     ]
-    if eth_usd is not None and eth_usd > 0:
-        usd_value = info.balance_eth * eth_usd
+    if total_usd > 0:
         lines.append(
-            f"💵 <b>USD value:</b> ≈ "
-            f"{escape(_fmt_usd_compact(usd_value))} "
-            f"<i>(@ ${eth_usd:,.2f}/ETH)</i>"
+            f"{e.diamond} <b>Total:</b> ≈ {escape(_fmt_usd_compact(total_usd))}"
         )
+        lines.append("")
+
+    if nonzero:
+        lines.append(f"{e.diamond} <b>Balances</b>")
+        for cb in nonzero:
+            px = prices.get(cb.chain.price_symbol, 0.0)
+            usd_str = (
+                f"  ≈ {escape(_fmt_usd_compact(cb.balance * px))}"
+                if px > 0
+                else ""
+            )
+            lines.append(
+                f"  <b>{escape(cb.chain.name):<10}</b> "
+                f"<code>{escape(_fmt_native(cb.balance))} "
+                f"{escape(cb.chain.native_symbol)}</code>{usd_str}"
+            )
+    else:
+        lines.append(
+            f"{e.diamond} <i>No native-token balance on any tracked chain.</i>"
+        )
+
+    # Activity counters come from the most-active chain (whichever has
+    # the highest nonce). Falls back to "no activity" for fresh wallets.
+    active = info.recent_chain
+    total_sent = sum(cb.txs_sent for cb in info.balances)
     lines.append("")
     lines.append("📊 <b>Activity</b>")
-    lines.append(f"  Outgoing txs: <b>{info.txs_sent:,}</b>")
-    if info.last_tx_at is not None:
+    lines.append(f"  Outgoing txs (all chains): <b>{total_sent:,}</b>")
+    if active is not None and info.last_tx_at is not None:
         lines.append(
-            f"  Last seen: <i>{escape(_humanize_age(now, info.last_tx_at))}</i>"
+            f"  Last seen: <i>{escape(_humanize_age(now, info.last_tx_at))}</i> "
+            f"<i>on {escape(active.name)}</i>"
         )
     else:
         lines.append("  Last seen: <i>never</i>")
-    if info.recent:
+
+    if info.recent and active is not None:
         lines.append("")
-        lines.append("🕐 <b>Recent transactions</b>")
-        lines.extend(_render_wallet_tx(tx, now) for tx in info.recent)
+        lines.append(
+            f"{e.clock} <b>Recent transactions</b> <i>· {escape(active.name)}</i>"
+        )
+        lines.extend(
+            _render_wallet_tx(tx, active.native_symbol, now) for tx in info.recent
+        )
     lines.append("")
     lines.append(f"<i>Data: Etherscan · {escape(brand_name)}</i>")
     return "\n".join(lines)
 
 
+async def _fetch_native_prices(
+    paprika: CoinPaprikaClient | None, symbols: Iterable[str]
+) -> dict[str, float]:
+    """Fetch USD prices for a set of native-token symbols in parallel.
+
+    Returns a ``{symbol: price}`` map; symbols whose lookup fails are
+    simply omitted so the caller can render "—" for them.
+    """
+    if paprika is None:
+        return {}
+    unique = sorted({s.upper() for s in symbols if s})
+    if not unique:
+        return {}
+
+    async def _one(sym: str) -> tuple[str, float] | None:
+        try:
+            snap = await paprika.fetch_price_snapshot(sym)
+        except Exception:  # noqa: BLE001
+            logger.exception("native price lookup failed for %s", sym)
+            return None
+        if snap is None or snap.price_usd <= 0:
+            return None
+        return sym, float(snap.price_usd)
+
+    results = await asyncio.gather(*(_one(s) for s in unique))
+    return {sym: price for r in results if r is not None for sym, price in (r,)}
+
+
 async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Reply with an Ethereum wallet summary card."""
+    """Reply with a multichain wallet summary card."""
     msg = update.effective_message
     chat = update.effective_chat
     if msg is None or chat is None:
@@ -899,21 +1007,10 @@ async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     paprika: CoinPaprikaClient | None = context.bot_data.get("paprika")
     await _typing(context, chat.id)
 
-    async def _safe_eth_price() -> float | None:
-        if paprika is None:
-            return None
-        try:
-            snap = await paprika.fetch_price_snapshot("ETH")
-        except Exception:  # noqa: BLE001
-            logger.exception("/wallet: ETH price lookup failed")
-            return None
-        if snap is None or snap.price_usd <= 0:
-            return None
-        return float(snap.price_usd)
-
-    info, eth_usd = await asyncio.gather(
+    needed_symbols = {c.price_symbol for c in CHAINS}
+    info, prices = await asyncio.gather(
         etherscan.fetch_wallet(address),
-        _safe_eth_price(),
+        _fetch_native_prices(paprika, needed_symbols),
     )
     if info is None:
         await msg.reply_text(
@@ -922,8 +1019,121 @@ async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         return
     settings: Settings = context.bot_data["settings"]
+    emojis = _resolve_premium_emojis(settings)
     await msg.reply_text(
-        _render_wallet(info, eth_usd, settings.brand_name),
+        _render_wallet(info, prices, settings.brand_name, emojis),
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+        reply_markup=_brand_keyboard(settings),
+    )
+
+
+# ---------------------------------------------------------------------------
+# /gas — gas oracle across every supported Etherscan chain.
+# ---------------------------------------------------------------------------
+
+
+# Native-transfer gas budget; used to convert gwei → USD estimate for
+# the "(~$X.XX)" hint on each tier. Real-world tx cost on dapps is
+# usually 5–10× higher (~150k gas for a Uniswap swap) but a plain
+# transfer is the universally relatable benchmark.
+_NATIVE_TRANSFER_GAS = 21_000
+
+
+def _gwei_to_usd(gwei: float, native_price_usd: float) -> float:
+    """USD cost of a 21k-gas native transfer at ``gwei`` and price."""
+    if gwei <= 0 or native_price_usd <= 0:
+        return 0.0
+    return gwei * _NATIVE_TRANSFER_GAS * 1e-9 * native_price_usd
+
+
+def _fmt_gas_usd(usd: float) -> str:
+    if usd <= 0:
+        return ""
+    if usd >= 1:
+        return f" <i>(~${usd:,.2f})</i>"
+    if usd >= 0.01:
+        return f" <i>(~${usd:.2f})</i>"
+    return f" <i>(~${usd:.4f})</i>"
+
+
+def _fmt_gwei(value: float) -> str:
+    """Trim trailing zeros so 22.0 reads as ``22`` and 0.05 stays ``0.05``."""
+    s = f"{value:,.2f}" if value >= 1 else f"{value:.4f}"
+    return s.rstrip("0").rstrip(".") or "0"
+
+
+def _render_gas(
+    snaps: tuple[ChainGas, ...],
+    prices: dict[str, float],
+    brand_name: str,
+    emojis: PremiumEmojis | None = None,
+) -> str:
+    """HTML body for ``/gas``: live oracle readings across chains."""
+    e = emojis if emojis is not None else default_premium_emojis()
+    lines: list[str] = [
+        f"{e.gas} <b>Gas</b> — <i>Live Rates</i>",
+        "",
+    ]
+    if not snaps:
+        lines.append("<i>No gas data available right now.</i>")
+        lines.append("")
+        lines.append(f"<i>Data: Etherscan · {escape(brand_name)}</i>")
+        return "\n".join(lines)
+    for snap in snaps:
+        px = prices.get(snap.chain.price_symbol, 0.0)
+        safe_usd = _gwei_to_usd(snap.tier.safe_gwei, px)
+        std_usd = _gwei_to_usd(snap.tier.standard_gwei, px)
+        fast_usd = _gwei_to_usd(snap.tier.fast_gwei, px)
+        lines.append(f"<b>{escape(snap.chain.name)}</b>")
+        lines.append(
+            f"  Safe: <code>{_fmt_gwei(snap.tier.safe_gwei)}</code> gwei"
+            f"{_fmt_gas_usd(safe_usd)}"
+        )
+        lines.append(
+            f"  Standard: <code>{_fmt_gwei(snap.tier.standard_gwei)}</code> gwei"
+            f"{_fmt_gas_usd(std_usd)}"
+        )
+        lines.append(
+            f"  Fast: <code>{_fmt_gwei(snap.tier.fast_gwei)}</code> gwei"
+            f"{_fmt_gas_usd(fast_usd)}"
+        )
+        lines.append("")
+    lines.append(
+        "<i>USD estimates assume a 21k-gas native transfer.</i>"
+    )
+    lines.append(f"<i>Data: Etherscan · {escape(brand_name)}</i>")
+    return "\n".join(lines)
+
+
+async def cmd_gas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reply with a multichain gas-oracle card."""
+    msg = update.effective_message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
+    etherscan: EtherscanClient | None = context.bot_data.get("etherscan")
+    if etherscan is None or not etherscan.is_configured():
+        await msg.reply_text(
+            "Gas lookup needs an Etherscan API key.\n"
+            "Set <code>ETHERSCAN_API_KEY</code> in your environment "
+            "(free key at <a href=\"https://etherscan.io/apis\">"
+            "etherscan.io/apis</a>) and restart the bot.",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        return
+    paprika: CoinPaprikaClient | None = context.bot_data.get("paprika")
+    await _typing(context, chat.id)
+    needed_symbols = {c.price_symbol for c in CHAINS}
+    snaps, prices = await asyncio.gather(
+        etherscan.fetch_all_gas(),
+        _fetch_native_prices(paprika, needed_symbols),
+    )
+    settings: Settings = context.bot_data["settings"]
+    emojis = _resolve_premium_emojis(settings)
+    await msg.reply_text(
+        _render_gas(snaps, prices, settings.brand_name, emojis),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
         reply_markup=_brand_keyboard(settings),

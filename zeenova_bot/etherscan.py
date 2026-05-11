@@ -1,20 +1,29 @@
-"""Etherscan V2 API client used by the ``/wallet`` command.
+"""Etherscan V2 API client used by ``/wallet`` and ``/gas``.
 
-Only covers the small handful of endpoints we need to render a wallet
-summary card: native ETH balance, recent transaction list, and (for the
-"transactions sent" counter) the account nonce. Everything is keyed by
-a single ``ETHERSCAN_API_KEY``; one free key from etherscan.io now
-works for all 60+ chains via the V2 multichain API
-(`docs.etherscan.io/v2-migration`).
+Covers the small handful of endpoints we need:
+
+* Native balance (``account/balance``) — for the per-chain balance grid
+  in :func:`fetch_wallet`.
+* Account nonce (``proxy/eth_getTransactionCount``) — the "txs sent"
+  counter.
+* Recent transactions (``account/txlist``) — the last few rows on the
+  most-active chain.
+* Gas oracle (``gastracker/gasoracle``) — for the ``/gas`` command.
+
+Everything is keyed by a single ``ETHERSCAN_API_KEY``; one free key
+from etherscan.io now works for all 60+ chains via the V2 multichain
+API (`docs.etherscan.io/v2-migration`). Each request sends
+``chainid=X`` explicitly so swapping chains is a per-call concern.
 
 The client follows the same pattern as the other thin HTTP clients in
 this package: a shared ``httpx.AsyncClient`` from
 :mod:`zeenova_bot.http`, a 90-second cooldown after a 429 / 5xx, and a
-TTL cache so repeated lookups of the same address are cheap.
+TTL cache so repeated lookups are cheap.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -28,25 +37,31 @@ from .http import shared_async_client
 
 logger = logging.getLogger(__name__)
 
-# V2 base URL. Always pass ``chainid`` explicitly; we hard-code 1 here
-# because the bot only surfaces Ethereum mainnet wallets for now. Other
-# chains can be added by parameterising ``CHAIN_ID``.
+# V2 base URL. Always pass ``chainid`` explicitly per call.
 BASE_URL = "https://api.etherscan.io/v2/api"
-CHAIN_ID = 1
 
-# Wei per ETH. ``1 ETH = 10**18 wei`` — the smallest unit on Ethereum.
-WEI_PER_ETH = 10**18
+# Wei per native token. All supported chains use 18 decimals (EVM
+# convention); kept as a constant to make the math obvious in renderers.
+WEI_PER_UNIT = 10**18
 
 # After a 429 / 5xx we cool down for this long before retrying. Same
 # convention as :mod:`zeenova_bot.coingecko`.
 _COOLDOWN_S: float = 90.0
 
-# How long the per-address summary stays in the in-memory cache. Wallet
-# data changes when a tx lands (~12 s on Ethereum), but we don't want
-# repeated ``/wallet`` calls within seconds to hammer Etherscan either.
-# 60 s strikes a balance — frequently-checked wallets stay snappy while
-# fresh data is never older than a block confirmation or two.
-_CACHE_TTL_S: float = 60.0
+# How long the per-address wallet summary stays in the in-memory cache.
+# Native balances change when a tx lands (~12 s on Ethereum, faster on
+# L2s) — 60 s keeps repeat clicks snappy without serving stale data.
+_WALLET_CACHE_TTL_S: float = 60.0
+
+# Gas prices move every block, but the user-visible difference between
+# two adjacent block samples is usually <1 gwei. 20 s feels live without
+# burning the per-chain quota.
+_GAS_CACHE_TTL_S: float = 20.0
+
+# Cap parallel chain fan-out below the free-tier 5 req/s ceiling so a
+# single ``/wallet`` invocation never trips the rate limiter for the
+# whole bot.
+_CHAIN_FANOUT: int = 4
 
 # Etherscan rejects anything that isn't a 0x-prefixed 40-hex-char string
 # (case-insensitive). Validating client-side avoids a wasted round-trip
@@ -58,6 +73,44 @@ _ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 def is_valid_address(address: str) -> bool:
     """True if ``address`` is a syntactically valid Ethereum address."""
     return bool(_ADDR_RE.match(address.strip()))
+
+
+@dataclass(slots=True, frozen=True)
+class Chain:
+    """Metadata for one supported chain.
+
+    ``price_symbol`` is the ticker we send to CoinPaprika to look up
+    the native token's USD price. It's a separate field because some
+    chains share a native token (Arbitrum, Optimism, Base all use ETH)
+    and some chains' native tokens have an alias (Polygon's MATIC
+    became POL in 2024 but most listings still surface as MATIC).
+    """
+
+    id: int
+    name: str
+    native_symbol: str
+    price_symbol: str
+    explorer_url: str  # base URL for ``/address/{addr}`` deep links
+
+
+# Curated list of chains surfaced in the multichain wallet + /gas
+# command. Order is also the rendering order, with Ethereum first.
+CHAINS: tuple[Chain, ...] = (
+    Chain(1, "Ethereum", "ETH", "ETH", "https://etherscan.io"),
+    Chain(56, "BSC", "BNB", "BNB", "https://bscscan.com"),
+    Chain(137, "Polygon", "POL", "MATIC", "https://polygonscan.com"),
+    Chain(42161, "Arbitrum", "ETH", "ETH", "https://arbiscan.io"),
+    Chain(10, "Optimism", "ETH", "ETH", "https://optimistic.etherscan.io"),
+    Chain(8453, "Base", "ETH", "ETH", "https://basescan.org"),
+    Chain(43114, "Avalanche", "AVAX", "AVAX", "https://snowtrace.io"),
+)
+
+
+def _chain_by_id(chain_id: int) -> Chain | None:
+    for c in CHAINS:
+        if c.id == chain_id:
+            return c
+    return None
 
 
 @dataclass(slots=True, frozen=True)
@@ -73,19 +126,83 @@ class WalletTx:
 
 
 @dataclass(slots=True, frozen=True)
+class ChainBalance:
+    """Per-chain native balance + tx counters.
+
+    Always present for every chain in :data:`CHAINS`; balances of zero
+    are rendered too so users can see "where I'm not active" at a
+    glance.
+    """
+
+    chain: Chain
+    balance_wei: int
+    balance: float  # human-friendly amount in native units
+    txs_sent: int
+    last_tx_at: int | None
+
+
+@dataclass(slots=True, frozen=True)
 class WalletInfo:
-    """Aggregated, render-ready wallet summary."""
+    """Aggregated, render-ready multichain wallet summary."""
 
     address: str  # lowercased, 0x-prefixed
-    balance_wei: int
-    balance_eth: float
-    txs_sent: int  # account nonce — total outgoing txs ever
-    last_tx_at: int | None  # unix seconds; None for a wallet with no history
+    balances: tuple[ChainBalance, ...]
+    # Recent transactions are only fetched on the most-active chain to
+    # keep the API budget reasonable. The picked chain is exposed so
+    # the renderer can label the section.
+    recent_chain: Chain | None
     recent: tuple[WalletTx, ...]
+
+    # Convenience accessors used by both renderers and tests so the
+    # "primary" (Ethereum) balance line stays trivial to read.
+
+    @property
+    def primary(self) -> ChainBalance | None:
+        for cb in self.balances:
+            if cb.chain.id == 1:
+                return cb
+        return None
+
+    @property
+    def balance_eth(self) -> float:
+        p = self.primary
+        return p.balance if p is not None else 0.0
+
+    @property
+    def balance_wei(self) -> int:
+        p = self.primary
+        return p.balance_wei if p is not None else 0
+
+    @property
+    def txs_sent(self) -> int:
+        p = self.primary
+        return p.txs_sent if p is not None else 0
+
+    @property
+    def last_tx_at(self) -> int | None:
+        p = self.primary
+        return p.last_tx_at if p is not None else None
+
+
+@dataclass(slots=True, frozen=True)
+class GasTier:
+    """One row from the gas oracle response."""
+
+    safe_gwei: float
+    standard_gwei: float
+    fast_gwei: float
+
+
+@dataclass(slots=True, frozen=True)
+class ChainGas:
+    """Gas oracle reading for a single chain."""
+
+    chain: Chain
+    tier: GasTier
 
 
 class EtherscanClient:
-    """Minimal Etherscan V2 client tailored to the ``/wallet`` command.
+    """Multichain Etherscan V2 client.
 
     Construct without an api_key for tests / dry-runs and call
     :meth:`is_configured` to short-circuit at the handler level.
@@ -94,21 +211,28 @@ class EtherscanClient:
     def __init__(self, api_key: str = "", timeout: float = 10.0) -> None:
         self._api_key = api_key.strip()
         self._client = shared_async_client(timeout=timeout)
-        self._cache: TTLCache[str, WalletInfo] = TTLCache(
-            maxsize=512, ttl=_CACHE_TTL_S
+        self._wallet_cache: TTLCache[str, WalletInfo] = TTLCache(
+            maxsize=512, ttl=_WALLET_CACHE_TTL_S
+        )
+        # Keyed by chain id so callers can fetch a single chain's gas
+        # without dragging the rest along.
+        self._gas_cache: TTLCache[int, ChainGas] = TTLCache(
+            maxsize=64, ttl=_GAS_CACHE_TTL_S
         )
         self._cooldown_until: float = 0.0
+        self._fanout = asyncio.Semaphore(_CHAIN_FANOUT)
 
     def is_configured(self) -> bool:
-        """True when an API key is set. ``/wallet`` short-circuits on
-        ``False`` so users get a clear "configure ETHERSCAN_API_KEY"
-        message instead of a generic upstream error."""
+        """True when an API key is set. ``/wallet`` and ``/gas``
+        short-circuit on ``False`` so users get a clear "configure
+        ETHERSCAN_API_KEY" message instead of a generic upstream error.
+        """
         return bool(self._api_key)
 
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def _get(self, params: dict[str, Any]) -> Any:
+    async def _get(self, chain_id: int, params: dict[str, Any]) -> Any:
         """Issue one V2 request. Returns the decoded JSON or raises.
 
         Etherscan signals errors two ways:
@@ -121,10 +245,11 @@ class EtherscanClient:
           (``message="No transactions found"``) is a valid outcome we
           must not treat as a hard error.
         """
-        merged: dict[str, Any] = {"chainid": CHAIN_ID, **params}
+        merged: dict[str, Any] = {"chainid": chain_id, **params}
         if self._api_key:
             merged["apikey"] = self._api_key
-        resp = await self._client.get(BASE_URL, params=merged)
+        async with self._fanout:
+            resp = await self._client.get(BASE_URL, params=merged)
         if resp.status_code == 429:
             self._cooldown_until = time.time() + _COOLDOWN_S
             raise httpx.HTTPStatusError(
@@ -142,9 +267,15 @@ class EtherscanClient:
             )
         return resp.json()
 
-    async def _eth_balance(self, address: str) -> int:
+    async def _balance(self, chain_id: int, address: str) -> int:
         body = await self._get(
-            {"module": "account", "action": "balance", "address": address, "tag": "latest"}
+            chain_id,
+            {
+                "module": "account",
+                "action": "balance",
+                "address": address,
+                "tag": "latest",
+            },
         )
         if not isinstance(body, dict):
             return 0
@@ -155,7 +286,7 @@ class EtherscanClient:
         except (TypeError, ValueError):
             return 0
 
-    async def _tx_count(self, address: str) -> int:
+    async def _tx_count(self, chain_id: int, address: str) -> int:
         """Total outgoing tx count via ``eth_getTransactionCount``.
 
         Etherscan exposes the JSON-RPC nonce through its
@@ -166,12 +297,13 @@ class EtherscanClient:
         misleading "Total".
         """
         body = await self._get(
+            chain_id,
             {
                 "module": "proxy",
                 "action": "eth_getTransactionCount",
                 "address": address,
                 "tag": "latest",
-            }
+            },
         )
         if not isinstance(body, dict):
             return 0
@@ -184,9 +316,10 @@ class EtherscanClient:
             return 0
 
     async def _recent_txs(
-        self, address: str, *, limit: int = 5
+        self, chain_id: int, address: str, *, limit: int = 5
     ) -> tuple[WalletTx, ...]:
         body = await self._get(
+            chain_id,
             {
                 "module": "account",
                 "action": "txlist",
@@ -196,7 +329,7 @@ class EtherscanClient:
                 "page": 1,
                 "offset": max(1, limit),
                 "sort": "desc",
-            }
+            },
         )
         if not isinstance(body, dict):
             return ()
@@ -232,37 +365,167 @@ class EtherscanClient:
             )
         return tuple(out)
 
+    async def _chain_balance(
+        self, chain: Chain, address: str
+    ) -> ChainBalance | None:
+        """One row of :class:`ChainBalance` — balance plus the cheap
+        ``txs_sent`` counter that lets us pick the "most active" chain
+        without a third call per row.
+        """
+        try:
+            balance_wei = await self._balance(chain.id, address)
+            txs_sent = await self._tx_count(chain.id, address)
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.debug(
+                "etherscan: chain %d (%s) failed: %s", chain.id, chain.name, exc
+            )
+            return None
+        return ChainBalance(
+            chain=chain,
+            balance_wei=balance_wei,
+            balance=balance_wei / WEI_PER_UNIT,
+            txs_sent=txs_sent,
+            last_tx_at=None,
+        )
+
     async def fetch_wallet(self, address: str) -> WalletInfo | None:
-        """Aggregate the three calls into a single :class:`WalletInfo`.
+        """Fan out balance + nonce queries across every supported chain.
+
+        Recent transactions are only pulled for the chain with the
+        highest outgoing-tx count (proxy for "most-used") to keep the
+        per-call API budget around 2 × N + 1 instead of 3 × N.
 
         Returns ``None`` when the API key is missing, the address is
-        malformed, we're inside the rate-limit cooldown window, or any
-        of the three upstream calls raises a transport error.
+        malformed, we're inside the rate-limit cooldown window, or
+        *every* chain call raises (i.e. complete network failure).
+        Partial failures (some chains down, others ok) still return a
+        populated :class:`WalletInfo` — the failed chains are simply
+        omitted from the balance grid.
         """
         if not self.is_configured():
             return None
         addr = address.strip().lower()
         if not is_valid_address(addr):
             return None
-        if addr in self._cache:
-            return self._cache[addr]
+        if addr in self._wallet_cache:
+            return self._wallet_cache[addr]
         if time.time() < self._cooldown_until:
             return None
-        try:
-            balance_wei = await self._eth_balance(addr)
-            txs_sent = await self._tx_count(addr)
-            recent = await self._recent_txs(addr)
-        except (httpx.HTTPError, ValueError) as exc:
-            logger.debug("etherscan lookup failed for %s: %s", addr, exc)
+        results = await asyncio.gather(
+            *(self._chain_balance(c, addr) for c in CHAINS),
+            return_exceptions=False,
+        )
+        balances: tuple[ChainBalance, ...] = tuple(
+            cb for cb in results if cb is not None
+        )
+        if not balances:
             return None
-        last_tx_at = recent[0].timestamp if recent else None
+        # Pick the chain with the highest nonce as the "primary" for the
+        # tx-list query. Falls back to Ethereum if every chain has a
+        # zero nonce (brand new wallet) so the user still sees the
+        # familiar "no transactions yet" footer rather than nothing.
+        active = max(balances, key=lambda cb: cb.txs_sent)
+        recent_chain: Chain | None = None
+        recent: tuple[WalletTx, ...] = ()
+        if active.txs_sent > 0:
+            try:
+                recent = await self._recent_txs(active.chain.id, addr)
+                recent_chain = active.chain
+            except (httpx.HTTPError, ValueError) as exc:
+                logger.debug("etherscan: recent txs failed: %s", exc)
+        # Patch ``last_tx_at`` on the primary-chain row so the header
+        # "Activity" block can read it straight off the model.
+        if recent_chain is not None and recent:
+            patched: list[ChainBalance] = []
+            for cb in balances:
+                if cb.chain.id == recent_chain.id:
+                    patched.append(
+                        ChainBalance(
+                            chain=cb.chain,
+                            balance_wei=cb.balance_wei,
+                            balance=cb.balance,
+                            txs_sent=cb.txs_sent,
+                            last_tx_at=recent[0].timestamp,
+                        )
+                    )
+                else:
+                    patched.append(cb)
+            balances = tuple(patched)
         info = WalletInfo(
             address=addr,
-            balance_wei=balance_wei,
-            balance_eth=balance_wei / WEI_PER_ETH,
-            txs_sent=txs_sent,
-            last_tx_at=last_tx_at,
+            balances=balances,
+            recent_chain=recent_chain,
             recent=recent,
         )
-        self._cache[addr] = info
+        self._wallet_cache[addr] = info
         return info
+
+    async def _fetch_gas_one(self, chain: Chain) -> ChainGas | None:
+        if chain.id in self._gas_cache:
+            return self._gas_cache[chain.id]
+        try:
+            body = await self._get(
+                chain.id,
+                {"module": "gastracker", "action": "gasoracle"},
+            )
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.debug(
+                "etherscan: gas oracle failed for chain %d: %s", chain.id, exc
+            )
+            return None
+        if not isinstance(body, dict) or str(body.get("status")) != "1":
+            return None
+        result = body.get("result")
+        if not isinstance(result, dict):
+            return None
+        try:
+            tier = GasTier(
+                safe_gwei=float(result.get("SafeGasPrice") or 0),
+                standard_gwei=float(result.get("ProposeGasPrice") or 0),
+                fast_gwei=float(result.get("FastGasPrice") or 0),
+            )
+        except (TypeError, ValueError):
+            return None
+        # Skip useless rows (some L2s return zero gas when the oracle is
+        # offline; rendering "0 gwei" is misleading).
+        if tier.safe_gwei <= 0 and tier.standard_gwei <= 0 and tier.fast_gwei <= 0:
+            return None
+        snap = ChainGas(chain=chain, tier=tier)
+        self._gas_cache[chain.id] = snap
+        return snap
+
+    async def fetch_all_gas(self) -> tuple[ChainGas, ...]:
+        """Fan out gas-oracle queries across every supported chain.
+
+        Returns rows in :data:`CHAINS` order. Chains where the oracle
+        is unavailable are simply dropped (we never raise — partial
+        success is the rule on L2s).
+        """
+        if not self.is_configured():
+            return ()
+        if time.time() < self._cooldown_until:
+            # Surface whatever we already cached so a transient 429
+            # doesn't blank the entire ``/gas`` card.
+            return tuple(self._gas_cache.values())
+        results = await asyncio.gather(
+            *(self._fetch_gas_one(c) for c in CHAINS),
+            return_exceptions=False,
+        )
+        return tuple(g for g in results if g is not None)
+
+
+# Re-export so callers can import the supported chain list directly
+# without crossing the ``Chain`` boundary.
+__all__ = [
+    "CHAINS",
+    "BASE_URL",
+    "WEI_PER_UNIT",
+    "Chain",
+    "ChainBalance",
+    "ChainGas",
+    "EtherscanClient",
+    "GasTier",
+    "WalletInfo",
+    "WalletTx",
+    "is_valid_address",
+]

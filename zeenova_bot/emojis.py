@@ -74,6 +74,17 @@ class PremiumEmojis:
     coins: str  # 🪙 Active coins
     top: str  # 📈 /top header
     news: str  # 📰 /news header
+    # /ath card slots
+    ath_header: str  # 🏆 /ath header trophy
+    diamond: str  # 💎 Current price / wallet balance
+    ath_up: str  # 🚀 ATH section header + "from ATL" gain row
+    ath_down: str  # 🩸 ATL section header
+    date: str  # 📅 calendar date
+    pct_down: str  # 📉 "% from ATH" arrow
+    # /wallet card slots
+    wallet: str  # 🔍 wallet header
+    clock: str  # 🕐 recent-transactions header
+    gas: str  # ⛽ /gas header
 
 
 def default_premium_emojis() -> PremiumEmojis:
@@ -98,4 +109,13 @@ def default_premium_emojis() -> PremiumEmojis:
         coins="🪙",
         top="📈",
         news="📰",
+        ath_header="🏆",
+        diamond="💎",
+        ath_up="🚀",
+        ath_down="🩸",
+        date="📅",
+        pct_down="📉",
+        wallet="🔍",
+        clock="🕐",
+        gas="⛽",
     )

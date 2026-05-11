@@ -2073,11 +2073,18 @@ async def test_cmd_ath_reports_unknown_symbol() -> None:
 def _wallet_info(
     address: str = "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
     *,
-    balance_wei: int = 3_450_000_000_000_000_000,
+    eth_balance_wei: int = 3_450_000_000_000_000_000,
+    bnb_balance_wei: int = 0,
     txs_sent: int = 1234,
     with_recent: bool = True,
 ) -> object:
-    from zeenova_bot.etherscan import WalletInfo, WalletTx
+    """Build a multichain :class:`WalletInfo` for handler tests.
+
+    Defaults mimic a "mostly Ethereum-active" wallet: a real ETH
+    balance + nonce on Ethereum, zero on every other chain, with a
+    short recent-tx list rendered against Ethereum.
+    """
+    from zeenova_bot.etherscan import CHAINS, ChainBalance, WalletInfo, WalletTx
 
     recent: tuple[WalletTx, ...] = ()
     if with_recent:
@@ -2099,12 +2106,34 @@ def _wallet_info(
                 is_incoming=True,
             ),
         )
+    eth_chain = next(c for c in CHAINS if c.id == 1)
+    balances_list: list[ChainBalance] = []
+    for chain in CHAINS:
+        if chain.id == 1:
+            wei = eth_balance_wei
+            sent = txs_sent
+            last = recent[0].timestamp if recent else None
+        elif chain.id == 56:
+            wei = bnb_balance_wei
+            sent = 0
+            last = None
+        else:
+            wei = 0
+            sent = 0
+            last = None
+        balances_list.append(
+            ChainBalance(
+                chain=chain,
+                balance_wei=wei,
+                balance=wei / 10**18,
+                txs_sent=sent,
+                last_tx_at=last,
+            )
+        )
     return WalletInfo(
         address=address,
-        balance_wei=balance_wei,
-        balance_eth=balance_wei / 10**18,
-        txs_sent=txs_sent,
-        last_tx_at=recent[0].timestamp if recent else None,
+        balances=tuple(balances_list),
+        recent_chain=eth_chain if recent else None,
         recent=recent,
     )
 
@@ -2151,7 +2180,9 @@ async def test_cmd_wallet_renders_full_card_when_configured() -> None:
     # the EIP-55 mixed-case checksum is only a display affordance.)
     assert "0xd8da…6045" in body
     assert "ETH" in body
-    assert "USD value" in body
+    # Total line is rendered when at least one chain has a USD price.
+    assert "Total:" in body
+    assert "Ethereum" in body
     assert "Recent transactions" in body
     # Outgoing tx renders with a leading minus sign.
     assert "-0.5" in body
@@ -2224,8 +2255,8 @@ async def test_cmd_wallet_handles_upstream_failure() -> None:
 
 @pytest.mark.asyncio
 async def test_cmd_wallet_renders_card_without_eth_price() -> None:
-    """If the ETH price lookup fails, the card still renders — just
-    without the USD-value line."""
+    """If every native-token price lookup fails, the card still
+    renders — just without the Total line or per-row USD column."""
     from zeenova_bot.handlers import cmd_wallet
 
     etherscan = MagicMock()
@@ -2236,5 +2267,128 @@ async def test_cmd_wallet_renders_card_without_eth_price() -> None:
     update, context = _wallet_update_context(etherscan, paprika)
     await cmd_wallet(update, context)
     body = _last_reply(update.effective_message)
-    assert "USD value" not in body
+    # Without prices we never render the "Total: ≈ $X" summary line.
+    assert "Total:" not in body
+    # Balances grid still renders the per-chain row with the native
+    # symbol and amount.
     assert "ETH" in body
+    assert "Ethereum" in body
+
+
+# ---------------------------------------------------------------------------
+# /gas — live gas rates across chains.
+# ---------------------------------------------------------------------------
+
+
+def _gas_snap(chain_id: int, safe: float, std: float, fast: float) -> object:
+    from zeenova_bot.etherscan import CHAINS, ChainGas, GasTier
+
+    chain = next(c for c in CHAINS if c.id == chain_id)
+    return ChainGas(
+        chain=chain,
+        tier=GasTier(safe_gwei=safe, standard_gwei=std, fast_gwei=fast),
+    )
+
+
+def _gas_update_context(
+    etherscan: object,
+    paprika: object | None,
+) -> tuple[MagicMock, MagicMock]:
+    msg = MagicMock()
+    msg.reply_text = AsyncMock()
+    update = MagicMock()
+    update.effective_message = msg
+    update.effective_chat = MagicMock()
+    context = MagicMock()
+    bot_data: dict[str, object] = {"etherscan": etherscan, "settings": _settings()}
+    if paprika is not None:
+        bot_data["paprika"] = paprika
+    context.bot_data = bot_data
+    context.args = []
+    return update, context
+
+
+@pytest.mark.asyncio
+async def test_cmd_gas_renders_card_with_chain_rows() -> None:
+    """Happy path: every chain returns a gas snapshot. We render
+    Safe/Standard/Fast rows and the chain headers."""
+    from zeenova_bot.handlers import cmd_gas
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    etherscan.fetch_all_gas = AsyncMock(
+        return_value=(
+            _gas_snap(1, 18, 22, 28),
+            _gas_snap(56, 3, 3, 5),
+            _gas_snap(137, 30, 35, 40),
+        )
+    )
+    paprika = MagicMock()
+    paprika.fetch_price_snapshot = AsyncMock(
+        return_value=MagicMock(price_usd=2800.0)
+    )
+    update, context = _gas_update_context(etherscan, paprika)
+    await cmd_gas(update, context)
+    body = _last_reply(update.effective_message)
+    assert "Gas" in body
+    assert "Ethereum" in body
+    assert "BSC" in body
+    assert "Polygon" in body
+    assert "Safe:" in body
+    assert "Standard:" in body
+    assert "Fast:" in body
+    assert "gwei" in body
+
+
+@pytest.mark.asyncio
+async def test_cmd_gas_hint_when_api_key_missing() -> None:
+    """Without an API key the bot replies with a setup hint."""
+    from zeenova_bot.handlers import cmd_gas
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=False)
+    etherscan.fetch_all_gas = AsyncMock()
+    update, context = _gas_update_context(etherscan, None)
+    await cmd_gas(update, context)
+    body = _last_reply(update.effective_message)
+    assert "ETHERSCAN_API_KEY" in body
+    etherscan.fetch_all_gas.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cmd_gas_handles_empty_response() -> None:
+    """When every chain's gas oracle is unavailable, the card still
+    renders but with a friendly placeholder line."""
+    from zeenova_bot.handlers import cmd_gas
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    etherscan.fetch_all_gas = AsyncMock(return_value=())
+    paprika = MagicMock()
+    paprika.fetch_price_snapshot = AsyncMock(return_value=None)
+    update, context = _gas_update_context(etherscan, paprika)
+    await cmd_gas(update, context)
+    body = _last_reply(update.effective_message)
+    assert "No gas data available" in body
+
+
+@pytest.mark.asyncio
+async def test_cmd_gas_renders_without_paprika_prices() -> None:
+    """If price lookups fail, gas rows still render in gwei without
+    the USD estimate."""
+    from zeenova_bot.handlers import cmd_gas
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    etherscan.fetch_all_gas = AsyncMock(
+        return_value=(_gas_snap(1, 18, 22, 28),)
+    )
+    paprika = MagicMock()
+    paprika.fetch_price_snapshot = AsyncMock(return_value=None)
+    update, context = _gas_update_context(etherscan, paprika)
+    await cmd_gas(update, context)
+    body = _last_reply(update.effective_message)
+    assert "Ethereum" in body
+    assert "gwei" in body
+    # No USD estimate column when prices are unavailable.
+    assert "~$" not in body

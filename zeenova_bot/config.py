@@ -74,6 +74,18 @@ class Settings(BaseSettings):
     premium_emoji_fng_id: str = Field(default="")  # 😱/😨/😐/🙂/🤑 — Fear & Greed
     premium_emoji_top_id: str = Field(default="")  # 📈 — /top header
     premium_emoji_news_id: str = Field(default="")  # 📰 — /news header
+    # /ath card slots
+    premium_emoji_ath_header_id: str = Field(default="")  # 🏆 — /ath header
+    premium_emoji_diamond_id: str = Field(default="")  # 💎 — /ath Current + /wallet Balance
+    premium_emoji_ath_up_id: str = Field(default="")  # 🚀 — ATH section header + ATL gain row
+    premium_emoji_ath_down_id: str = Field(default="")  # 🩸 — ATL section header
+    premium_emoji_date_id: str = Field(default="")  # 📅 — calendar date
+    premium_emoji_pct_down_id: str = Field(default="")  # 📉 — "% from ATH"
+    # /wallet card slots
+    premium_emoji_wallet_id: str = Field(default="")  # 🔍 — wallet header
+    premium_emoji_clock_id: str = Field(default="")  # 🕐 — recent transactions header
+    # /gas card slot
+    premium_emoji_gas_id: str = Field(default="")  # ⛽ — /gas header
 
     log_level: str = Field(default="INFO")
 

@@ -34,7 +34,8 @@ _BOT_COMMANDS: tuple[BotCommand, ...] = (
     BotCommand("top", "Today's top gainers and losers"),
     BotCommand("news", "Latest crypto headlines"),
     BotCommand("ath", "All-time high / low for a coin (e.g. /ath btc)"),
-    BotCommand("wallet", "Ethereum wallet summary (e.g. /wallet 0x…)"),
+    BotCommand("wallet", "Multichain wallet summary (e.g. /wallet 0x…)"),
+    BotCommand("gas", "Live gas rates across EVM chains"),
     BotCommand("help", "How to use the bot"),
 )
 
