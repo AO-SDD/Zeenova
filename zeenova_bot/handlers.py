@@ -10,6 +10,7 @@ import logging
 import re
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from functools import partial
 from html import escape
 from typing import Final
@@ -43,10 +44,13 @@ from .calc import CalcError, safe_eval
 from .calc import parse_input as parse_calc_input
 from .card import render_price_card
 from .chart import render_candles
+from .coingecko import AthAtl
+from .coingecko import MarketcapClient as CoinGeckoMarketcap
 from .coinpaprika import CoinPaprikaClient, GlobalSnapshot, TickerSnapshot
 from .config import Settings
 from .edit_state import EditableReplyStore, ReplyKind
 from .emojis import PremiumEmojis, premium_emoji
+from .etherscan import EtherscanClient, WalletInfo, WalletTx, is_valid_address
 from .fear_greed import FearGreed, FearGreedClient, render_dial
 from .fx import FxClient
 from .news import NewsArticle, NewsClient
@@ -149,7 +153,11 @@ def _help_text(settings: Settings) -> str:
         "• <code>/top</code> — the day's biggest gainers and losers from "
         "the top 100 coins by marketcap.\n"
         "• <code>/news</code> — latest crypto headlines from major "
-        "outlets (CoinDesk, Cointelegraph, Decrypt).\n\n"
+        "outlets (CoinDesk, Cointelegraph, Decrypt).\n"
+        "• <code>/ath SYMBOL</code> — all-time-high and all-time-low "
+        "records (e.g. <code>/ath btc</code>).\n"
+        "• <code>/wallet 0x…</code> — Ethereum wallet summary: balance, "
+        "USD value, recent transactions.\n\n"
         "<b>🧮 Calculator &amp; conversion</b>\n"
         "• Plain math with full operator precedence — "
         "<code>2+2/4</code>, <code>(1+2)*3</code>, <code>2^10</code>, "
@@ -233,6 +241,8 @@ def build_application(
     app.add_handler(CommandHandler(["top", "movers"], cmd_top))
     app.add_handler(CommandHandler(["market", "global"], cmd_market))
     app.add_handler(CommandHandler(["news"], cmd_news))
+    app.add_handler(CommandHandler(["ath"], cmd_ath))
+    app.add_handler(CommandHandler(["wallet", "addr"], cmd_wallet))
     app.add_handler(CommandHandler(["emojiid"], cmd_emojiid))
     app.add_handler(
         MessageHandler(
@@ -641,6 +651,279 @@ async def cmd_news(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     emojis = _resolve_premium_emojis(settings)
     await msg.reply_text(
         _render_news(articles, settings.brand_name, emojis=emojis),
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+        reply_markup=_brand_keyboard(settings),
+    )
+
+
+# ---------------------------------------------------------------------------
+# /ath — all-time-high / all-time-low snapshot for a coin.
+# ---------------------------------------------------------------------------
+
+
+def _humanize_age(now_ts: int, then_ts: int) -> str:
+    """Compact "x ago" string for ``then_ts`` relative to ``now_ts``.
+
+    Mirrors the style used in the rest of the bot (short, no leading
+    zeros). We pick the largest unit that still produces a single
+    integer ≥ 1 — e.g. 3,700 s renders as ``1h``, 90,000 s as ``1d``,
+    400 d as ``1y``. Future timestamps clamp to ``"just now"`` so a
+    minor clock skew between Etherscan / CoinGecko and the bot never
+    surfaces a negative duration.
+    """
+    delta = max(0, now_ts - then_ts)
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        return f"{delta // 60}m ago"
+    if delta < 86_400:
+        return f"{delta // 3600}h ago"
+    if delta < 86_400 * 30:
+        return f"{delta // 86_400}d ago"
+    if delta < 86_400 * 365:
+        return f"{delta // (86_400 * 30)}mo ago"
+    return f"{delta // (86_400 * 365)}y ago"
+
+
+def _parse_iso_ts(value: str) -> datetime | None:
+    """Parse a CoinGecko-style ISO 8601 timestamp.
+
+    CoinGecko emits trailing ``Z`` for UTC; :func:`datetime.fromisoformat`
+    only learned to accept it in 3.11+. We do the swap explicitly so
+    behaviour stays predictable across runtime versions.
+    """
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _fmt_iso_date(value: str) -> str:
+    """Render a CoinGecko ISO timestamp as ``Mon DD, YYYY``."""
+    parsed = _parse_iso_ts(value)
+    if parsed is None:
+        return "—"
+    return parsed.strftime("%b %-d, %Y")
+
+
+def _render_ath(snap: AthAtl, brand_name: str) -> str:
+    """HTML body for ``/ath``: ATH/ATL snapshot with relative dates."""
+    now = int(datetime.now(UTC).timestamp())
+    ath_dt = _parse_iso_ts(snap.ath_date)
+    atl_dt = _parse_iso_ts(snap.atl_date)
+    ath_ago = (
+        _humanize_age(now, int(ath_dt.timestamp())) if ath_dt is not None else "—"
+    )
+    atl_ago = (
+        _humanize_age(now, int(atl_dt.timestamp())) if atl_dt is not None else "—"
+    )
+    rank_line = (
+        f"📊 <b>Rank:</b> #{snap.rank}\n" if snap.rank is not None else ""
+    )
+    return (
+        f"🏆 <b>{escape(snap.name)} ({escape(snap.symbol)})</b> — "
+        f"<i>All-Time Records</i>\n"
+        f"\n"
+        f"💎 <b>Current:</b> {escape(_fmt_unit_price(snap.current_price))}\n"
+        f"{rank_line}"
+        f"\n"
+        f"🚀 <b>All-Time High</b>\n"
+        f"  {escape(_fmt_unit_price(snap.ath))}\n"
+        f"  📅 {escape(_fmt_iso_date(snap.ath_date))} "
+        f"<i>({escape(ath_ago)})</i>\n"
+        f"  📉 <b>{_fmt_change_pct(snap.ath_change_pct)}</b> from ATH\n"
+        f"\n"
+        f"🩸 <b>All-Time Low</b>\n"
+        f"  {escape(_fmt_unit_price(snap.atl))}\n"
+        f"  📅 {escape(_fmt_iso_date(snap.atl_date))} "
+        f"<i>({escape(atl_ago)})</i>\n"
+        f"  🚀 <b>{_fmt_change_pct(snap.atl_change_pct)}</b> from ATL\n"
+        f"\n"
+        f"<i>Data: CoinGecko · {escape(brand_name)}</i>"
+    )
+
+
+async def cmd_ath(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reply with ATH/ATL snapshot for a coin from CoinGecko."""
+    msg = update.effective_message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
+    args = context.args or []
+    if not args:
+        await msg.reply_text(
+            "Usage: <code>/ath SYMBOL</code>  (e.g. <code>/ath BTC</code>)",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    coingecko: CoinGeckoMarketcap | None = context.bot_data.get("coingecko")
+    if coingecko is None:
+        await msg.reply_text(
+            "ATH lookup is unavailable right now.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    symbol = args[0].lstrip("$").strip().upper()
+    if not symbol:
+        await msg.reply_text(
+            "Usage: <code>/ath SYMBOL</code>  (e.g. <code>/ath BTC</code>)",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    await _typing(context, chat.id)
+    snap = await coingecko.fetch_ath_atl(symbol)
+    if snap is None:
+        await msg.reply_text(
+            f"No ATH/ATL data for <b>{escape(symbol)}</b>.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    settings: Settings = context.bot_data["settings"]
+    await msg.reply_text(
+        _render_ath(snap, settings.brand_name),
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+        reply_markup=_brand_keyboard(settings),
+    )
+
+
+# ---------------------------------------------------------------------------
+# /wallet — Ethereum wallet summary via Etherscan V2.
+# ---------------------------------------------------------------------------
+
+
+def _short_addr(address: str) -> str:
+    """Shorten an Ethereum address to ``0xABCD…1234`` form for display."""
+    if len(address) < 10:
+        return address
+    return f"{address[:6]}…{address[-4:]}"
+
+
+def _fmt_eth(value: float) -> str:
+    """Format an ETH amount with magnitude-appropriate precision."""
+    if value >= 1000:
+        return f"{value:,.2f}"
+    if value >= 1:
+        return f"{value:,.4f}"
+    if value >= 0.0001:
+        return f"{value:.6f}"
+    if value == 0:
+        return "0"
+    return f"{value:.8f}".rstrip("0").rstrip(".") or "0"
+
+
+def _render_wallet_tx(tx: WalletTx, now_ts: int) -> str:
+    """One ``recent transactions`` line."""
+    eth = tx.value_wei / 10**18
+    counterparty = tx.from_addr if tx.is_incoming else tx.to_addr
+    arrow = "↙" if tx.is_incoming else "↗"
+    sign = "+" if tx.is_incoming else "-"
+    direction = "from" if tx.is_incoming else "to"
+    age = _humanize_age(now_ts, tx.timestamp)
+    return (
+        f"  {arrow} <code>{sign}{escape(_fmt_eth(eth))} ETH</code> "
+        f"{direction} <code>{escape(_short_addr(counterparty))}</code> "
+        f"<i>({escape(age)})</i>"
+    )
+
+
+def _render_wallet(info: WalletInfo, eth_usd: float | None, brand_name: str) -> str:
+    """HTML body for ``/wallet``."""
+    now = int(datetime.now(UTC).timestamp())
+    lines: list[str] = [
+        f"🔍 <b>Wallet</b> <code>{escape(_short_addr(info.address))}</code>",
+        "",
+        f"💎 <b>Balance:</b> <code>{escape(_fmt_eth(info.balance_eth))} ETH</code>",
+    ]
+    if eth_usd is not None and eth_usd > 0:
+        usd_value = info.balance_eth * eth_usd
+        lines.append(
+            f"💵 <b>USD value:</b> ≈ "
+            f"{escape(_fmt_usd_compact(usd_value))} "
+            f"<i>(@ ${eth_usd:,.2f}/ETH)</i>"
+        )
+    lines.append("")
+    lines.append("📊 <b>Activity</b>")
+    lines.append(f"  Outgoing txs: <b>{info.txs_sent:,}</b>")
+    if info.last_tx_at is not None:
+        lines.append(
+            f"  Last seen: <i>{escape(_humanize_age(now, info.last_tx_at))}</i>"
+        )
+    else:
+        lines.append("  Last seen: <i>never</i>")
+    if info.recent:
+        lines.append("")
+        lines.append("🕐 <b>Recent transactions</b>")
+        lines.extend(_render_wallet_tx(tx, now) for tx in info.recent)
+    lines.append("")
+    lines.append(f"<i>Data: Etherscan · {escape(brand_name)}</i>")
+    return "\n".join(lines)
+
+
+async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reply with an Ethereum wallet summary card."""
+    msg = update.effective_message
+    chat = update.effective_chat
+    if msg is None or chat is None:
+        return
+    args = context.args or []
+    if not args:
+        await msg.reply_text(
+            "Usage: <code>/wallet 0x…</code>  "
+            "(e.g. <code>/wallet 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045</code>)",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    address = args[0].strip()
+    if not is_valid_address(address):
+        await msg.reply_text(
+            "That doesn't look like a valid Ethereum address. "
+            "Expected a 0x-prefixed 40-character hex string.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    etherscan: EtherscanClient | None = context.bot_data.get("etherscan")
+    if etherscan is None or not etherscan.is_configured():
+        await msg.reply_text(
+            "Wallet lookup needs an Etherscan API key.\n"
+            "Set <code>ETHERSCAN_API_KEY</code> in your environment "
+            "(free key at <a href=\"https://etherscan.io/apis\">"
+            "etherscan.io/apis</a>) and restart the bot.",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        return
+    paprika: CoinPaprikaClient | None = context.bot_data.get("paprika")
+    await _typing(context, chat.id)
+
+    async def _safe_eth_price() -> float | None:
+        if paprika is None:
+            return None
+        try:
+            snap = await paprika.fetch_price_snapshot("ETH")
+        except Exception:  # noqa: BLE001
+            logger.exception("/wallet: ETH price lookup failed")
+            return None
+        if snap is None or snap.price_usd <= 0:
+            return None
+        return float(snap.price_usd)
+
+    info, eth_usd = await asyncio.gather(
+        etherscan.fetch_wallet(address),
+        _safe_eth_price(),
+    )
+    if info is None:
+        await msg.reply_text(
+            "Couldn't reach Etherscan for that wallet. Try again in a minute.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    settings: Settings = context.bot_data["settings"]
+    await msg.reply_text(
+        _render_wallet(info, eth_usd, settings.brand_name),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
         reply_markup=_brand_keyboard(settings),

@@ -1973,3 +1973,268 @@ async def test_send_text_reply_deletes_and_resends_when_kind_changes() -> None:
     update.effective_message.reply_text.assert_awaited_once()
     # New entry records the new bot message id under the same key.
     assert store.get(1, 100) == (43, "text")
+
+
+# ---------------------------------------------------------------------------
+# /ath — all-time high / low from CoinGecko
+# ---------------------------------------------------------------------------
+
+
+def _ath_snapshot() -> object:
+    from zeenova_bot.coingecko import AthAtl
+
+    return AthAtl(
+        symbol="BTC",
+        name="Bitcoin",
+        current_price=81611.0,
+        ath=126080.0,
+        ath_change_pct=-35.27,
+        ath_date="2025-10-06T18:57:42.558Z",
+        atl=67.81,
+        atl_change_pct=120253.85,
+        atl_date="2013-07-06T00:00:00.000Z",
+        rank=1,
+    )
+
+
+def _ath_update_context(coingecko: object) -> tuple[MagicMock, MagicMock]:
+    msg = MagicMock()
+    msg.reply_text = AsyncMock()
+    update = MagicMock()
+    update.effective_message = msg
+    update.effective_chat = MagicMock()
+    context = MagicMock()
+    context.bot_data = {"coingecko": coingecko, "settings": _settings()}
+    context.args = ["btc"]
+    return update, context
+
+
+@pytest.mark.asyncio
+async def test_cmd_ath_renders_snapshot_card() -> None:
+    from zeenova_bot.handlers import cmd_ath
+
+    coingecko = MagicMock()
+    coingecko.fetch_ath_atl = AsyncMock(return_value=_ath_snapshot())
+    update, context = _ath_update_context(coingecko)
+    await cmd_ath(update, context)
+    body = _last_reply(update.effective_message)
+    assert "Bitcoin" in body
+    assert "BTC" in body
+    assert "All-Time High" in body
+    assert "All-Time Low" in body
+    assert "Rank:</b> #1" in body
+    coingecko.fetch_ath_atl.assert_awaited_once_with("BTC")
+
+
+@pytest.mark.asyncio
+async def test_cmd_ath_strips_dollar_prefix_and_uppercases() -> None:
+    """``$eth`` becomes ``ETH`` — same normalisation as /p."""
+    from zeenova_bot.handlers import cmd_ath
+
+    coingecko = MagicMock()
+    coingecko.fetch_ath_atl = AsyncMock(return_value=None)
+    update, context = _ath_update_context(coingecko)
+    context.args = ["$eth"]
+    await cmd_ath(update, context)
+    coingecko.fetch_ath_atl.assert_awaited_once_with("ETH")
+
+
+@pytest.mark.asyncio
+async def test_cmd_ath_replies_with_usage_when_no_args() -> None:
+    from zeenova_bot.handlers import cmd_ath
+
+    coingecko = MagicMock()
+    coingecko.fetch_ath_atl = AsyncMock()
+    update, context = _ath_update_context(coingecko)
+    context.args = []
+    await cmd_ath(update, context)
+    body = _last_reply(update.effective_message)
+    assert "/ath SYMBOL" in body
+    coingecko.fetch_ath_atl.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cmd_ath_reports_unknown_symbol() -> None:
+    from zeenova_bot.handlers import cmd_ath
+
+    coingecko = MagicMock()
+    coingecko.fetch_ath_atl = AsyncMock(return_value=None)
+    update, context = _ath_update_context(coingecko)
+    await cmd_ath(update, context)
+    body = _last_reply(update.effective_message)
+    assert "No ATH/ATL data" in body
+
+
+# ---------------------------------------------------------------------------
+# /wallet — Ethereum wallet summary from Etherscan
+# ---------------------------------------------------------------------------
+
+
+def _wallet_info(
+    address: str = "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+    *,
+    balance_wei: int = 3_450_000_000_000_000_000,
+    txs_sent: int = 1234,
+    with_recent: bool = True,
+) -> object:
+    from zeenova_bot.etherscan import WalletInfo, WalletTx
+
+    recent: tuple[WalletTx, ...] = ()
+    if with_recent:
+        recent = (
+            WalletTx(
+                hash="0xaaa",
+                timestamp=1_730_000_000,
+                from_addr=address,
+                to_addr="0x" + "1" * 40,
+                value_wei=500_000_000_000_000_000,
+                is_incoming=False,
+            ),
+            WalletTx(
+                hash="0xbbb",
+                timestamp=1_729_999_000,
+                from_addr="0x" + "2" * 40,
+                to_addr=address,
+                value_wei=1_200_000_000_000_000_000,
+                is_incoming=True,
+            ),
+        )
+    return WalletInfo(
+        address=address,
+        balance_wei=balance_wei,
+        balance_eth=balance_wei / 10**18,
+        txs_sent=txs_sent,
+        last_tx_at=recent[0].timestamp if recent else None,
+        recent=recent,
+    )
+
+
+def _wallet_update_context(
+    etherscan: object,
+    paprika: object | None,
+    *,
+    args: list[str] | None = None,
+) -> tuple[MagicMock, MagicMock]:
+    msg = MagicMock()
+    msg.reply_text = AsyncMock()
+    update = MagicMock()
+    update.effective_message = msg
+    update.effective_chat = MagicMock()
+    context = MagicMock()
+    bot_data: dict[str, object] = {"etherscan": etherscan, "settings": _settings()}
+    if paprika is not None:
+        bot_data["paprika"] = paprika
+    context.bot_data = bot_data
+    context.args = args if args is not None else [
+        "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+    ]
+    return update, context
+
+
+@pytest.mark.asyncio
+async def test_cmd_wallet_renders_full_card_when_configured() -> None:
+    from zeenova_bot.handlers import cmd_wallet
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    etherscan.fetch_wallet = AsyncMock(return_value=_wallet_info())
+    paprika = MagicMock()
+    paprika.fetch_price_snapshot = AsyncMock(
+        return_value=MagicMock(price_usd=2800.0)
+    )
+    update, context = _wallet_update_context(etherscan, paprika)
+    await cmd_wallet(update, context)
+    body = _last_reply(update.effective_message)
+    assert "Wallet" in body
+    # Address is normalised to lowercase before storage so the shortened
+    # form is also lowercase. (Etherscan addresses are case-insensitive;
+    # the EIP-55 mixed-case checksum is only a display affordance.)
+    assert "0xd8da…6045" in body
+    assert "ETH" in body
+    assert "USD value" in body
+    assert "Recent transactions" in body
+    # Outgoing tx renders with a leading minus sign.
+    assert "-0.5" in body
+    # Incoming tx renders with a leading plus sign.
+    assert "+1.2" in body
+
+
+@pytest.mark.asyncio
+async def test_cmd_wallet_replies_with_usage_when_no_args() -> None:
+    from zeenova_bot.handlers import cmd_wallet
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    etherscan.fetch_wallet = AsyncMock()
+    update, context = _wallet_update_context(etherscan, None, args=[])
+    await cmd_wallet(update, context)
+    body = _last_reply(update.effective_message)
+    assert "/wallet 0x" in body
+    etherscan.fetch_wallet.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cmd_wallet_rejects_invalid_address() -> None:
+    from zeenova_bot.handlers import cmd_wallet
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    etherscan.fetch_wallet = AsyncMock()
+    update, context = _wallet_update_context(
+        etherscan, None, args=["not-an-address"]
+    )
+    await cmd_wallet(update, context)
+    body = _last_reply(update.effective_message)
+    assert "valid Ethereum address" in body
+    etherscan.fetch_wallet.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cmd_wallet_hint_when_api_key_missing() -> None:
+    """Without an API key, the bot replies with a setup hint instead of
+    a confusing upstream error."""
+    from zeenova_bot.handlers import cmd_wallet
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=False)
+    etherscan.fetch_wallet = AsyncMock()
+    update, context = _wallet_update_context(etherscan, None)
+    await cmd_wallet(update, context)
+    body = _last_reply(update.effective_message)
+    assert "ETHERSCAN_API_KEY" in body
+    etherscan.fetch_wallet.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cmd_wallet_handles_upstream_failure() -> None:
+    """When Etherscan returns None (transport error), the card collapses
+    to a friendly "try again" message."""
+    from zeenova_bot.handlers import cmd_wallet
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    etherscan.fetch_wallet = AsyncMock(return_value=None)
+    paprika = MagicMock()
+    paprika.fetch_price_snapshot = AsyncMock(return_value=None)
+    update, context = _wallet_update_context(etherscan, paprika)
+    await cmd_wallet(update, context)
+    body = _last_reply(update.effective_message)
+    assert "Couldn't reach Etherscan" in body
+
+
+@pytest.mark.asyncio
+async def test_cmd_wallet_renders_card_without_eth_price() -> None:
+    """If the ETH price lookup fails, the card still renders — just
+    without the USD-value line."""
+    from zeenova_bot.handlers import cmd_wallet
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    etherscan.fetch_wallet = AsyncMock(return_value=_wallet_info())
+    paprika = MagicMock()
+    paprika.fetch_price_snapshot = AsyncMock(return_value=None)
+    update, context = _wallet_update_context(etherscan, paprika)
+    await cmd_wallet(update, context)
+    body = _last_reply(update.effective_message)
+    assert "USD value" not in body
+    assert "ETH" in body

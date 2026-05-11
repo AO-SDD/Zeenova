@@ -38,6 +38,13 @@ Built for the **Zeen** community channels:
 - `/news` — latest English-language crypto headlines aggregated from
   CoinDesk, Cointelegraph, and Decrypt via their public RSS feeds (no
   API key required). Deduplicated by URL and cached for 5 minutes.
+- `/ath SYMBOL` — all-time-high / all-time-low snapshot for any coin:
+  ATH price + date + how far below ATH the current price sits, plus the
+  same for ATL. Sourced from CoinGecko, cached for an hour per coin.
+- `/wallet 0x…` — Ethereum wallet summary: ETH balance, USD value,
+  outgoing tx count, last activity, and the 5 most recent transactions
+  with counterparty and amount. Powered by the free Etherscan V2 API
+  (one key works across 60+ chains; only ETH mainnet for now).
 
 ### Calculator & conversions
 - Plain math with full operator precedence: `2+3*4`, `(1+2)*3`, `2^10`,
@@ -111,6 +118,7 @@ everywhere.
 |---|---|---|---|
 | `TELEGRAM_BOT_TOKEN` | yes | — | Token from BotFather. |
 | `COINGECKO_API_KEY` | no | empty | Optional Pro key. |
+| `ETHERSCAN_API_KEY` | no | empty | Etherscan V2 key (free at [etherscan.io/apis](https://etherscan.io/apis)) — powers the `/wallet` command. Without it the bot replies with a short setup hint when `/wallet` is invoked. |
 | `ALLOWED_CHAT_IDS` | no | empty | Comma-separated chat IDs. |
 | `BRAND_NAME` | no | `Zeenova` | Watermark on chart + F&G dial. |
 | `CHANNEL_NAME` | no | `Zeen Channel` | Label on the channel shortcut button. |

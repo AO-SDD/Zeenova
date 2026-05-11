@@ -17,6 +17,12 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str = Field(..., description="Token from @BotFather")
     coingecko_api_key: str = Field(default="", description="Optional CoinGecko Pro key")
+    # Free Etherscan V2 API key from https://etherscan.io/apis. Required
+    # for the ``/wallet 0x…`` command — without it the bot replies with
+    # a short setup hint instead of an opaque upstream error. One key
+    # works across all 60+ Etherscan-family chains via the V2 multichain
+    # API; for now we only query Ethereum mainnet (chainid=1).
+    etherscan_api_key: str = Field(default="", description="Optional Etherscan V2 key (powers /wallet)")
     allowed_chat_ids: str = Field(
         default="",
         description="Optional comma-separated chat IDs the bot may respond to",

@@ -20,9 +20,10 @@ distributions.
 6. [Deployment option D — Local development](#6-deployment-option-d--local-development)
 7. [Environment variables — quick reference](#7-environment-variables--quick-reference)
 8. [Premium custom-emoji setup](#8-premium-custom-emoji-setup)
-9. [Updating](#9-updating)
-10. [Logs and monitoring](#10-logs-and-monitoring)
-11. [Troubleshooting](#11-troubleshooting)
+9. [Etherscan API key setup (`/wallet`)](#8b-etherscan-api-key-setup-wallet)
+10. [Updating](#9-updating)
+11. [Logs and monitoring](#10-logs-and-monitoring)
+12. [Troubleshooting](#11-troubleshooting)
 
 ---
 
@@ -425,6 +426,7 @@ your production bot keeps running on the server uninterrupted.
 |---|---|---|---|
 | `TELEGRAM_BOT_TOKEN` | **yes** | — | From [@BotFather](https://t.me/BotFather). |
 | `COINGECKO_API_KEY` | no | empty | Optional CoinGecko Pro key. |
+| `ETHERSCAN_API_KEY` | no | empty | Etherscan V2 key (free at [etherscan.io/apis](https://etherscan.io/apis)) — powers `/wallet 0x…`. One key works across 60+ chains via the V2 multichain API. Leave blank to disable `/wallet`. |
 | `ALLOWED_CHAT_IDS` | no | empty | Comma-separated chat IDs to restrict free-text triggers. Leave blank to allow everywhere. |
 | `BRAND_NAME` | no | `Zeenova` | Watermark on chart + F&G dial. |
 | `CHANNEL_NAME` / `GROUP_NAME` | no | `Zeen Channel` / `Zeen Chat` | Labels on the channel/chat shortcut buttons. |
@@ -520,6 +522,47 @@ sed -i '/^PREMIUM_EMOJI_/d' .env
 sed -i '/^BRAND_.*_EMOJI_ID=/d' .env
 docker compose up -d
 ```
+
+---
+
+## 8b. Etherscan API key setup (`/wallet`)
+
+The `/wallet 0x…` command needs a free Etherscan V2 API key to look up
+Ethereum wallet balances and transactions. Without a key, the bot
+replies to `/wallet` with a short setup hint and the command no-ops.
+
+**Steps:**
+
+1. Sign up at [etherscan.io/register](https://etherscan.io/register) —
+   no payment info required.
+2. Open the [API-KEYs dashboard](https://etherscan.io/myapikey) and
+   click **Add**. Give the key a name (e.g. `zeenova-bot`).
+3. Copy the generated key (40-character string) and add it to `.env`:
+   ```bash
+   echo "ETHERSCAN_API_KEY=YOUR_KEY_HERE" >> .env
+   ```
+4. Recreate the container so the new env var loads (`up -d`, **not**
+   `restart`):
+   ```bash
+   docker compose up -d
+   ```
+5. Test in DM:
+   ```
+   /wallet 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
+   ```
+   That's vitalik.eth — should return a wallet card with ETH balance,
+   USD value, and recent transactions.
+
+**Notes:**
+
+- The free tier is **5 req/s and 100,000 req/day** — plenty for a
+  community bot. Each `/wallet` call uses ~3 API requests.
+- One key works across **60+ chains** via the V2 multichain API
+  (Polygon, BSC, Arbitrum, Optimism, Base, etc.). The bot only queries
+  Ethereum mainnet for now but the same key is forward-compatible for
+  future chain support.
+- Results are cached per-address for 60 seconds to avoid hammering
+  Etherscan on rapid retries.
 
 ---
 
