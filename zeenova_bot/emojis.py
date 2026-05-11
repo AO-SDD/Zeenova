@@ -58,6 +58,11 @@ class PremiumEmojis:
 
     up: str  # 🟢 24H change up / Gainers
     down: str  # 🔴 24H change down / Losers
+    # Optional direction-agnostic icon for the 24H Change row. When
+    # this is an empty string the price card falls back to ``up``/
+    # ``down`` based on direction. Anything else (a plain glyph or a
+    # ``<tg-emoji>`` HTML wrapper) replaces both 🟢 and 🔴 on that row.
+    change: str
     rank: str  # 🏆 Coin rank
     price: str  # 💵 Price
     high: str  # 🔼 24H high
@@ -81,6 +86,7 @@ def default_premium_emojis() -> PremiumEmojis:
     return PremiumEmojis(
         up="🟢",
         down="🔴",
+        change="",
         rank="🏆",
         price="💵",
         high="🔼",

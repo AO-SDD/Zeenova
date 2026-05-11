@@ -1658,3 +1658,78 @@ def test_render_price_card_defaults_to_plain_emojis_without_override() -> None:
     assert "💵" in body
     assert "🔴" in body  # 24H change negative → down
     assert "<tg-emoji" not in body
+
+
+def test_change_slot_empty_by_default_so_24h_change_follows_direction() -> None:
+    """Without ``PREMIUM_EMOJI_CHANGE_ID``, the 24H Change row uses the
+    same up/down dot as the header — same behaviour as before this slot
+    existed."""
+    from zeenova_bot.card import render_price_card
+    from zeenova_bot.handlers import _resolve_premium_emojis
+    from zeenova_bot.services import MarketData
+
+    md = MarketData(
+        symbol="BTC",
+        pair="BTCUSDT",
+        source="binance",
+        price_usd=80_000.0,
+        price_change_pct_24h=-2.5,
+        high_24h=82_000.0,
+        low_24h=79_000.0,
+        market_cap_usd=1.6e12,
+        total_volume_usd_24h=4.2e10,
+    )
+    emojis = _resolve_premium_emojis(_settings())
+    assert emojis.change == ""
+    body = render_price_card(md, emojis)
+    # Both header dot and 24H Change row should be the down dot.
+    assert body.count("🔴") == 2
+    assert "🟢" not in body
+
+
+def test_change_id_pins_24h_change_emoji_regardless_of_direction() -> None:
+    """With ``PREMIUM_EMOJI_CHANGE_ID`` set, the 24H Change row uses
+    that one Premium emoji for both up and down moves; the header dot
+    keeps tracking direction independently."""
+    from zeenova_bot.card import render_price_card
+    from zeenova_bot.handlers import _resolve_premium_emojis
+    from zeenova_bot.services import MarketData
+
+    settings = _settings()
+    settings.premium_emoji_change_id = "9999"
+    emojis = _resolve_premium_emojis(settings)
+    assert emojis.change == '<tg-emoji emoji-id="9999">📊</tg-emoji>'
+
+    # Negative move: header should be 🔴, 24H Change should be the
+    # wrapped Premium emoji (not 🔴).
+    md_down = MarketData(
+        symbol="BTC",
+        pair="BTCUSDT",
+        source="binance",
+        price_usd=80_000.0,
+        price_change_pct_24h=-2.5,
+        high_24h=82_000.0,
+        low_24h=79_000.0,
+        market_cap_usd=1.6e12,
+        total_volume_usd_24h=4.2e10,
+    )
+    body_down = render_price_card(md_down, emojis)
+    assert body_down.count("🔴") == 1  # only the header dot
+    assert '<tg-emoji emoji-id="9999">📊</tg-emoji> <b>24H Change:</b>' in body_down
+
+    # Positive move: header should be 🟢, 24H Change should still be
+    # the wrapped Premium emoji (not 🟢).
+    md_up = MarketData(
+        symbol="BTC",
+        pair="BTCUSDT",
+        source="binance",
+        price_usd=80_000.0,
+        price_change_pct_24h=1.5,
+        high_24h=82_000.0,
+        low_24h=79_000.0,
+        market_cap_usd=1.6e12,
+        total_volume_usd_24h=4.2e10,
+    )
+    body_up = render_price_card(md_up, emojis)
+    assert body_up.count("🟢") == 1  # only the header dot
+    assert '<tg-emoji emoji-id="9999">📊</tg-emoji> <b>24H Change:</b>' in body_up

@@ -114,6 +114,7 @@ everywhere.
 | `BRAND_GROUP_EMOJI_ID` | no | empty | Telegram Premium custom-emoji ID rendered on the chat button. Same Premium requirement as above. When set, the fallback 💬 emoji is dropped from the label. |
 | `PREMIUM_EMOJI_UP_ID` | no | empty | Premium custom-emoji ID for 🟢 (positive 24h change / Gainers). Same Premium requirement as the brand buttons. Use `/emojiid` to discover. |
 | `PREMIUM_EMOJI_DOWN_ID` | no | empty | Premium custom-emoji ID for 🔴 (negative 24h change / Losers). |
+| `PREMIUM_EMOJI_CHANGE_ID` | no | empty | Optional override: when set, the **24H Change** row uses this single Premium custom-emoji ID regardless of whether the move is positive or negative. The header dot keeps tracking direction with `_UP_ID` / `_DOWN_ID`. Leave blank to keep 24H Change in sync with the header dot. |
 | `PREMIUM_EMOJI_RANK_ID` | no | empty | Premium custom-emoji ID for 🏆 (coin rank line). |
 | `PREMIUM_EMOJI_PRICE_ID` | no | empty | Premium custom-emoji ID for 💵 (Price line). |
 | `PREMIUM_EMOJI_HIGH_ID` | no | empty | Premium custom-emoji ID for 🔼 (24H High line). |

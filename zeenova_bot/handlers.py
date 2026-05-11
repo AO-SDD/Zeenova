@@ -338,9 +338,18 @@ def _resolve_premium_emojis(settings: Settings) -> PremiumEmojis:
     ``PREMIUM_EMOJI_*_ID`` env var is non-empty; otherwise the plain
     fallback emoji is used.
     """
+    # The ``change`` slot is intentionally not wrapped via
+    # ``premium_emoji(emoji, …)`` — it's an *override* slot. When the
+    # operator hasn't set ``PREMIUM_EMOJI_CHANGE_ID`` we leave it
+    # empty so ``card.render_price_card`` falls back to the up/down
+    # dot. When the ID is set we wrap a neutral fallback (📊) inside
+    # the tag so non-Premium clients still see a sensible glyph.
+    change_id = settings.premium_emoji_change_id.strip()
+    change_html = premium_emoji("📊", change_id) if change_id else ""
     return PremiumEmojis(
         up=premium_emoji("🟢", settings.premium_emoji_up_id),
         down=premium_emoji("🔴", settings.premium_emoji_down_id),
+        change=change_html,
         rank=premium_emoji("🏆", settings.premium_emoji_rank_id),
         price=premium_emoji("💵", settings.premium_emoji_price_id),
         high=premium_emoji("🔼", settings.premium_emoji_high_id),

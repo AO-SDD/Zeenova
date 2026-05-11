@@ -61,7 +61,10 @@ def render_price_card(
     pct = md.price_change_pct_24h
     is_up = pct is None or pct >= 0
     header_dot = emojis.up if is_up else emojis.down
-    change_dot = emojis.up if is_up else emojis.down
+    # 24H Change can be pinned to a single direction-agnostic emoji
+    # (via PREMIUM_EMOJI_CHANGE_ID). When that override isn't set,
+    # fall back to the same up/down dot as the header.
+    change_dot = emojis.change or (emojis.up if is_up else emojis.down)
     # Off-exchange pairs already arrive with a slash (e.g. "OCT/USD") so
     # we just trust whatever ``md.pair`` says when the slash is present.
     # Exchange pairs are concatenated (e.g. "BTCUSDT") and need a friendlier
