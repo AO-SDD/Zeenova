@@ -110,8 +110,8 @@ everywhere.
 | `GROUP_NAME` | no | `Zeen Chat` | Label on the chat shortcut button. |
 | `TELEGRAM_CHANNEL_URL` | no | `https://t.me/ox_zeen` | URL behind the channel button. |
 | `TELEGRAM_GROUP_URL` | no | `https://t.me/blockzeen` | URL behind the chat button. |
-| `BRAND_CHANNEL_EMOJI_ID` | no | empty | Telegram Premium custom-emoji ID rendered on the channel button. Requires the bot owner to have Telegram Premium. Use `/emojiid` (reply to a message containing the emoji) to discover the ID. |
-| `BRAND_GROUP_EMOJI_ID` | no | empty | Telegram Premium custom-emoji ID rendered on the chat button. Same Premium requirement as above. |
+| `BRAND_CHANNEL_EMOJI_ID` | no | empty | Telegram Premium custom-emoji ID rendered on the channel button. Requires the bot owner to have Telegram Premium. Use `/emojiid` (reply to a message containing the emoji) to discover the ID. When set, the fallback 📣 emoji is dropped from the label so the button only shows the Premium icon. |
+| `BRAND_GROUP_EMOJI_ID` | no | empty | Telegram Premium custom-emoji ID rendered on the chat button. Same Premium requirement as above. When set, the fallback 💬 emoji is dropped from the label. |
 | `LOG_LEVEL` | no | `INFO` | Standard Python logging level. |
 
 ## Docker
