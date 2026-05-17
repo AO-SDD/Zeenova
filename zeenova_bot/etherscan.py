@@ -94,7 +94,11 @@ class Chain:
 
 
 # Curated list of chains surfaced in the multichain wallet + /gas
-# command. Order is also the rendering order, with Ethereum first.
+# command. Order is also the rendering order, with the L1/L2 majors
+# first and the long tail of EVM chains after. Every chain ID here
+# must be supported by the Etherscan V2 multichain API — see
+# https://docs.etherscan.io/etherscan-v2/getting-started/supported-chains
+# for the canonical list.
 CHAINS: tuple[Chain, ...] = (
     Chain(1, "Ethereum", "ETH", "ETH", "https://etherscan.io"),
     Chain(56, "BSC", "BNB", "BNB", "https://bscscan.com"),
@@ -103,6 +107,19 @@ CHAINS: tuple[Chain, ...] = (
     Chain(10, "Optimism", "ETH", "ETH", "https://optimistic.etherscan.io"),
     Chain(8453, "Base", "ETH", "ETH", "https://basescan.org"),
     Chain(43114, "Avalanche", "AVAX", "AVAX", "https://snowtrace.io"),
+    Chain(59144, "Linea", "ETH", "ETH", "https://lineascan.build"),
+    Chain(81457, "Blast", "ETH", "ETH", "https://blastscan.io"),
+    Chain(5000, "Mantle", "MNT", "MNT", "https://mantlescan.xyz"),
+    Chain(146, "Sonic", "S", "S", "https://sonicscan.org"),
+    Chain(130, "Unichain", "ETH", "ETH", "https://uniscan.xyz"),
+    Chain(80094, "Berachain", "BERA", "BERA", "https://berascan.com"),
+    Chain(100, "Gnosis", "xDAI", "DAI", "https://gnosisscan.io"),
+    Chain(42220, "Celo", "CELO", "CELO", "https://celoscan.io"),
+    Chain(1329, "Sei", "SEI", "SEI", "https://seitrace.com"),
+    Chain(1284, "Moonbeam", "GLMR", "GLMR", "https://moonscan.io"),
+    Chain(999, "HyperEVM", "HYPE", "HYPE", "https://hyperevmscan.io"),
+    Chain(2741, "Abstract", "ETH", "ETH", "https://abscan.org"),
+    Chain(9745, "Plasma", "XPL", "XPL", "https://plasmascan.to"),
 )
 
 

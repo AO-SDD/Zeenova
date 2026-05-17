@@ -42,8 +42,10 @@ Built for the **Zeen** community channels:
   ATH price + date + how far below ATH the current price sits, plus the
   same for ATL. Sourced from CoinGecko, cached for an hour per coin.
 - `/wallet 0x…` or `/wallet name.eth` — multichain wallet summary:
-  native-token balance and USD value on Ethereum, BSC, Polygon,
-  Arbitrum, Optimism, Base and Avalanche (every chain is shown, even
+  native-token balance and USD value across 20 EVM chains
+  (Ethereum, BSC, Polygon, Arbitrum, Optimism, Base, Avalanche, Linea,
+  Blast, Mantle, Sonic, Unichain, Berachain, Gnosis, Celo, Sei,
+  Moonbeam, HyperEVM, Abstract, Plasma — every chain is shown, even
   zero-balance rows), with a combined total and the 5 most recent
   transactions on the wallet's most-active chain. ENS names are
   resolved through a public free gateway so you can look up wallets by
