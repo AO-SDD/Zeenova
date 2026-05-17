@@ -460,9 +460,10 @@ class EtherscanClient:
         self._wallet_cache[addr] = info
         return info
 
-    async def _fetch_gas_one(self, chain: Chain) -> ChainGas | None:
-        if chain.id in self._gas_cache:
-            return self._gas_cache[chain.id]
+    async def _gas_from_oracle(self, chain: Chain) -> GasTier | None:
+        """Try the gastracker oracle. Returns ``None`` when the chain
+        doesn't expose one or the oracle is offline.
+        """
         try:
             body = await self._get(
                 chain.id,
@@ -486,9 +487,56 @@ class EtherscanClient:
             )
         except (TypeError, ValueError):
             return None
-        # Skip useless rows (some L2s return zero gas when the oracle is
-        # offline; rendering "0 gwei" is misleading).
         if tier.safe_gwei <= 0 and tier.standard_gwei <= 0 and tier.fast_gwei <= 0:
+            return None
+        return tier
+
+    async def _gas_from_eth_gas_price(self, chain: Chain) -> GasTier | None:
+        """Fallback for chains without a gastracker oracle.
+
+        ``proxy/eth_gasPrice`` is exposed on every EVM chain Etherscan
+        V2 covers. It returns a single "current" gas price; we synthesise
+        Safe/Standard/Fast tiers as multiples around it so the card stays
+        consistent with oracle-backed chains.
+        """
+        try:
+            body = await self._get(
+                chain.id,
+                {"module": "proxy", "action": "eth_gasPrice"},
+            )
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.debug(
+                "etherscan: eth_gasPrice failed for chain %d: %s", chain.id, exc
+            )
+            return None
+        if not isinstance(body, dict):
+            return None
+        raw = body.get("result")
+        if not isinstance(raw, str):
+            return None
+        try:
+            wei = int(raw, 16)
+        except (TypeError, ValueError):
+            return None
+        if wei <= 0:
+            return None
+        # 1 gwei == 1e9 wei. eth_gasPrice is the network's current
+        # baseline; render 0.9x/1.0x/1.15x as Safe/Standard/Fast — that
+        # roughly mirrors the spread real gas oracles report on L2s.
+        base_gwei = wei / 1e9
+        return GasTier(
+            safe_gwei=base_gwei * 0.9,
+            standard_gwei=base_gwei,
+            fast_gwei=base_gwei * 1.15,
+        )
+
+    async def _fetch_gas_one(self, chain: Chain) -> ChainGas | None:
+        if chain.id in self._gas_cache:
+            return self._gas_cache[chain.id]
+        tier = await self._gas_from_oracle(chain)
+        if tier is None:
+            tier = await self._gas_from_eth_gas_price(chain)
+        if tier is None:
             return None
         snap = ChainGas(chain=chain, tier=tier)
         self._gas_cache[chain.id] = snap

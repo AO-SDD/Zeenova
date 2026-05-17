@@ -14,6 +14,7 @@ from .bybit import BybitClient
 from .coingecko import MarketcapClient as CoinGeckoMarketcap
 from .coinpaprika import CoinPaprikaClient
 from .config import load_settings
+from .ens import EnsClient
 from .etherscan import EtherscanClient
 from .fear_greed import FearGreedClient
 from .fx import FxClient
@@ -75,6 +76,7 @@ def main() -> None:
     quote_sticker = QuoteStickerClient()
     news = NewsClient()
     etherscan = EtherscanClient(api_key=settings.etherscan_api_key)
+    ens = EnsClient()
 
     app = build_application(settings, service, fx)
     # /top and /market need the raw CoinPaprika client (the rest of the
@@ -93,6 +95,9 @@ def main() -> None:
     app.bot_data["coingecko"] = coingecko
     # /wallet uses Etherscan V2 (one key, 60+ chains, only ETH for now).
     app.bot_data["etherscan"] = etherscan
+    # /wallet also accepts ENS names (e.g. ``vitalik.eth``) resolved
+    # through a public free gateway. No API key required.
+    app.bot_data["ens"] = ens
 
     async def _post_init(application: Application) -> None:  # type: ignore[type-arg]
         # Publish the slash-command menu so Telegram's native autocomplete
@@ -125,6 +130,7 @@ def main() -> None:
         await quote_sticker.aclose()
         await news.aclose()
         await etherscan.aclose()
+        await ens.aclose()
 
     # PTB v21 exposes ``post_init`` / ``post_shutdown`` as configurable hooks.
     app.post_init = _post_init

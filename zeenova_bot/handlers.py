@@ -50,9 +50,9 @@ from .coinpaprika import CoinPaprikaClient, GlobalSnapshot, TickerSnapshot
 from .config import Settings
 from .edit_state import EditableReplyStore, ReplyKind
 from .emojis import PremiumEmojis, default_premium_emojis, premium_emoji
+from .ens import EnsClient, looks_like_ens
 from .etherscan import (
     CHAINS,
-    ChainBalance,
     ChainGas,
     EtherscanClient,
     WalletInfo,
@@ -874,39 +874,51 @@ def _render_wallet(
     prices: dict[str, float],
     brand_name: str,
     emojis: PremiumEmojis | None = None,
+    ens_name: str | None = None,
 ) -> str:
     """HTML body for ``/wallet``.
 
     ``prices`` maps a chain's ``price_symbol`` (e.g. ``"ETH"``,
     ``"BNB"``) to its current USD price. Unknown / missing entries
     just drop the USD column for that row.
+
+    ``ens_name`` is shown next to the short address when the user
+    looked the wallet up by ENS name (e.g. ``vitalik.eth``).
     """
     e = emojis if emojis is not None else default_premium_emojis()
     now = int(datetime.now(UTC).timestamp())
-    nonzero: list[ChainBalance] = [cb for cb in info.balances if cb.balance_wei > 0]
     total_usd = 0.0
-    for cb in nonzero:
+    for cb in info.balances:
+        if cb.balance_wei <= 0:
+            continue
         px = prices.get(cb.chain.price_symbol, 0.0)
         if px > 0:
             total_usd += cb.balance * px
 
-    lines: list[str] = [
-        f"{e.wallet} <b>Wallet</b> <code>{escape(_short_addr(info.address))}</code>",
-        "",
-    ]
+    if ens_name:
+        header = (
+            f"{e.wallet} <b>Wallet</b> <code>{escape(ens_name)}</code> "
+            f"<i>({escape(_short_addr(info.address))})</i>"
+        )
+    else:
+        header = (
+            f"{e.wallet} <b>Wallet</b> "
+            f"<code>{escape(_short_addr(info.address))}</code>"
+        )
+    lines: list[str] = [header, ""]
     if total_usd > 0:
         lines.append(
             f"{e.diamond} <b>Total:</b> ≈ {escape(_fmt_usd_compact(total_usd))}"
         )
         lines.append("")
 
-    if nonzero:
+    if info.balances:
         lines.append(f"{e.diamond} <b>Balances</b>")
-        for cb in nonzero:
+        for cb in info.balances:
             px = prices.get(cb.chain.price_symbol, 0.0)
             usd_str = (
                 f"  ≈ {escape(_fmt_usd_compact(cb.balance * px))}"
-                if px > 0
+                if px > 0 and cb.balance_wei > 0
                 else ""
             )
             lines.append(
@@ -989,14 +1001,32 @@ async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             parse_mode=ParseMode.HTML,
         )
         return
-    address = args[0].strip()
+    raw_input = args[0].strip()
+    address = raw_input
+    ens_name: str | None = None
     if not is_valid_address(address):
-        await msg.reply_text(
-            "That doesn't look like a valid Ethereum address. "
-            "Expected a 0x-prefixed 40-character hex string.",
-            parse_mode=ParseMode.HTML,
-        )
-        return
+        if looks_like_ens(address):
+            ens: EnsClient | None = context.bot_data.get("ens")
+            resolved = await ens.resolve(address) if ens is not None else None
+            if resolved is None:
+                await msg.reply_text(
+                    f"Couldn't resolve <code>{escape(raw_input)}</code> to an "
+                    "Ethereum address. Double-check the spelling — only "
+                    "canonical ENS names (e.g. <code>vitalik.eth</code>) are "
+                    "supported right now.",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+            ens_name = raw_input
+            address = resolved
+        else:
+            await msg.reply_text(
+                "That doesn't look like a valid Ethereum address or ENS name. "
+                "Expected a 0x-prefixed 40-character hex string or a name "
+                "like <code>vitalik.eth</code>.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
     etherscan: EtherscanClient | None = context.bot_data.get("etherscan")
     if etherscan is None or not etherscan.is_configured():
         await msg.reply_text(
@@ -1025,7 +1055,7 @@ async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     settings: Settings = context.bot_data["settings"]
     emojis = _resolve_premium_emojis(settings)
     await msg.reply_text(
-        _render_wallet(info, prices, settings.brand_name, emojis),
+        _render_wallet(info, prices, settings.brand_name, emojis, ens_name=ens_name),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
         reply_markup=_brand_keyboard(settings),

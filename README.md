@@ -41,15 +41,20 @@ Built for the **Zeen** community channels:
 - `/ath SYMBOL` — all-time-high / all-time-low snapshot for any coin:
   ATH price + date + how far below ATH the current price sits, plus the
   same for ATL. Sourced from CoinGecko, cached for an hour per coin.
-- `/wallet 0x…` — multichain wallet summary: native-token balance and
-  USD value on Ethereum, BSC, Polygon, Arbitrum, Optimism, Base and
-  Avalanche, with a combined total and the 5 most recent transactions
-  on the wallet's most-active chain. Powered by the free Etherscan V2
-  API (one key, 60+ chains).
-- `/gas` — live gas oracle rates (Safe / Standard / Fast in gwei) on
-  every supported chain, each tier annotated with an approximate USD
-  cost for a 21k-gas native transfer. Uses the same Etherscan V2 key
-  as `/wallet`; results are cached for 20 s per chain.
+- `/wallet 0x…` or `/wallet name.eth` — multichain wallet summary:
+  native-token balance and USD value on Ethereum, BSC, Polygon,
+  Arbitrum, Optimism, Base and Avalanche (every chain is shown, even
+  zero-balance rows), with a combined total and the 5 most recent
+  transactions on the wallet's most-active chain. ENS names are
+  resolved through a public free gateway so you can look up wallets by
+  their ENS handle (e.g. `vitalik.eth`). Powered by the free Etherscan
+  V2 API (one key, 60+ chains).
+- `/gas` — live gas rates (Safe / Standard / Fast in gwei) on every
+  supported chain — chains without a gastracker oracle fall back to
+  `eth_gasPrice` so you still get a reading. Each tier is annotated
+  with an approximate USD cost for a 21k-gas native transfer. Uses the
+  same Etherscan V2 key as `/wallet`; results are cached for 20 s per
+  chain.
 
 ### Calculator & conversions
 - Plain math with full operator precedence: `2+3*4`, `(1+2)*3`, `2^10`,
