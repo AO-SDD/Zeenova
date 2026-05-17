@@ -86,6 +86,13 @@ class PremiumEmojis:
     wallet: str  # 🔍 wallet header
     clock: str  # 🕐 recent-transactions header
     gas: str  # ⛽ /gas header
+    # /help & /start section icons
+    help_header: str  # 📈 brand header
+    help_prices: str  # 💹 Live prices & charts
+    help_market: str  # 📊 Market overview
+    help_calc: str  # 🧮 Calculator & conversion
+    help_fiat: str  # 🌍 Worldwide currencies
+    help_group: str  # ⚡ Group-friendly
 
 
 def default_premium_emojis() -> PremiumEmojis:
@@ -120,4 +127,10 @@ def default_premium_emojis() -> PremiumEmojis:
         wallet="🔍",
         clock="🕐",
         gas="⛽",
+        help_header="📈",
+        help_prices="💹",
+        help_market="📊",
+        help_calc="🧮",
+        help_fiat="🌍",
+        help_group="⚡",
     )

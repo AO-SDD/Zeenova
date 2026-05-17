@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -549,6 +550,41 @@ def test_help_text_advertises_core_features() -> None:
     # /market + /top get billing in the help text.
     assert "/market" in body
     assert "/top" in body
+
+
+def test_help_text_wraps_section_icons_in_premium_emoji_tags() -> None:
+    """Every section icon in /help is wrapped in a ``<tg-emoji>`` tag
+    when the operator configures a Premium ID for it."""
+    from zeenova_bot.emojis import default_premium_emojis, premium_emoji
+
+    base = default_premium_emojis()
+    emojis = replace(
+        base,
+        help_header=premium_emoji("📈", "111"),
+        help_prices=premium_emoji("💹", "222"),
+        help_market=premium_emoji("📊", "333"),
+        help_calc=premium_emoji("🧮", "444"),
+        help_fiat=premium_emoji("🌍", "555"),
+        help_group=premium_emoji("⚡", "666"),
+    )
+    body = _help_text(_settings(), emojis)
+    # Each section icon is wrapped in a Premium tag with the right ID.
+    assert 'emoji-id="111">📈</tg-emoji>' in body
+    assert 'emoji-id="222">💹</tg-emoji>' in body
+    assert 'emoji-id="333">📊</tg-emoji>' in body
+    assert 'emoji-id="444">🧮</tg-emoji>' in body
+    assert 'emoji-id="555">🌍</tg-emoji>' in body
+    assert 'emoji-id="666">⚡</tg-emoji>' in body
+
+
+def test_help_text_uses_plain_emojis_when_premium_ids_unset() -> None:
+    """Default (no Premium IDs set) renders raw emoji glyphs, not
+    ``<tg-emoji>`` tags."""
+    body = _help_text(_settings())
+    assert "<tg-emoji" not in body
+    # The plain glyphs are still in the body, untouched.
+    for glyph in ("📈", "💹", "📊", "🧮", "🌍", "⚡"):
+        assert glyph in body
 
 
 def test_help_keyboard_has_add_me_and_links() -> None:

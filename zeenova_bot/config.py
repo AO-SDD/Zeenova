@@ -88,6 +88,13 @@ class Settings(BaseSettings):
     premium_emoji_clock_id: str = Field(default="")  # 🕐 — recent transactions header
     # /gas card slot
     premium_emoji_gas_id: str = Field(default="")  # ⛽ — /gas header
+    # /help & /start section icons
+    premium_emoji_help_header_id: str = Field(default="")  # 📈 — brand header
+    premium_emoji_help_prices_id: str = Field(default="")  # 💹 — Live prices & charts
+    premium_emoji_help_market_id: str = Field(default="")  # 📊 — Market overview
+    premium_emoji_help_calc_id: str = Field(default="")  # 🧮 — Calculator & conversion
+    premium_emoji_help_fiat_id: str = Field(default="")  # 🌍 — Worldwide currencies
+    premium_emoji_help_group_id: str = Field(default="")  # ⚡ — Group-friendly
 
     log_level: str = Field(default="INFO")
 

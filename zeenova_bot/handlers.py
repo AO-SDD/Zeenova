@@ -139,14 +139,18 @@ _KNOWN_USD_RATES: Final[dict[str, float]] = {
     "stars": 0.015,
 }
 
-def _help_text(settings: Settings) -> str:
+def _help_text(
+    settings: Settings, emojis: PremiumEmojis | None = None
+) -> str:
     """Build the /start and /help message body from runtime settings."""
+    e = emojis if emojis is not None else default_premium_emojis()
     return (
-        f"<b>📈 {escape(settings.brand_name)} — your all-in-one crypto desk</b>\n"
+        f"<b>{e.help_header} {escape(settings.brand_name)} — your "
+        "all-in-one crypto desk</b>\n"
         "<i>Real-time prices, candlestick charts, and a smart calculator. "
         "Built for traders, analysts, and crypto communities.</i>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "<b>💹 Live prices &amp; charts</b>\n"
+        f"<b>{e.help_prices} Live prices &amp; charts</b>\n"
         "• Send any coin symbol to get its price card and 1D chart — "
         "tap <b>15M</b> · <b>1H</b> · <b>4H</b> · <b>1D</b> to switch timeframe.\n"
         "  Examples: <code>BTC</code> · <code>$ETH</code> · "
@@ -155,7 +159,7 @@ def _help_text(settings: Settings) -> str:
         "• Coverage includes every major exchange listing <b>plus</b> "
         "thin-listed coins tracked by aggregators (so coins like OCT or "
         "OPG still resolve).\n\n"
-        "<b>📊 Market overview</b>\n"
+        f"<b>{e.help_market} Market overview</b>\n"
         "• <code>/market</code> — total marketcap, 24h volume, BTC "
         "dominance, and the active coin count.\n"
         "• <code>/top</code> — the day's biggest gainers and losers from "
@@ -169,7 +173,7 @@ def _help_text(settings: Settings) -> str:
         "Base &amp; Avalanche.\n"
         "• <code>/gas</code> — live gas rates across every supported "
         "chain with a USD estimate per tier.\n\n"
-        "<b>🧮 Calculator &amp; conversion</b>\n"
+        f"<b>{e.help_calc} Calculator &amp; conversion</b>\n"
         "• Plain math with full operator precedence — "
         "<code>2+2/4</code>, <code>(1+2)*3</code>, <code>2^10</code>, "
         "<code>1k+1</code>\n"
@@ -181,10 +185,10 @@ def _help_text(settings: Settings) -> str:
         "<code>5000 egp btc</code>, <code>1 eth btc</code>\n"
         "• Telegram Stars — <code>300 star</code>, "
         "<code>3 usd star</code>, <code>3 usdt star</code>\n\n"
-        "<b>🌍 Worldwide currencies</b>\n"
+        f"<b>{e.help_fiat} Worldwide currencies</b>\n"
         "Every major fiat (USD, EUR, EGP, GBP, AED, …) plus thousands of "
         "cryptocurrencies and stablecoins.\n\n"
-        "<b>⚡ Group-friendly</b>\n"
+        f"<b>{e.help_group} Group-friendly</b>\n"
         "Add me to your channel or chat. I stay quiet on casual numbers "
         "(<code>50%</code>, <code>1k</code>) and only reply when you "
         "actually want a quote or a calc."
@@ -282,9 +286,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat is None:
         return
     settings: Settings = context.application.bot_data["settings"]
+    emojis = _resolve_premium_emojis(settings)
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text=_help_text(settings),
+        text=_help_text(settings, emojis),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
         reply_markup=_help_keyboard(context.bot.username, settings),
@@ -416,6 +421,12 @@ def _resolve_premium_emojis(settings: Settings) -> PremiumEmojis:
         wallet=premium_emoji("🔍", settings.premium_emoji_wallet_id),
         clock=premium_emoji("🕐", settings.premium_emoji_clock_id),
         gas=premium_emoji("⛽", settings.premium_emoji_gas_id),
+        help_header=premium_emoji("📈", settings.premium_emoji_help_header_id),
+        help_prices=premium_emoji("💹", settings.premium_emoji_help_prices_id),
+        help_market=premium_emoji("📊", settings.premium_emoji_help_market_id),
+        help_calc=premium_emoji("🧮", settings.premium_emoji_help_calc_id),
+        help_fiat=premium_emoji("🌍", settings.premium_emoji_help_fiat_id),
+        help_group=premium_emoji("⚡", settings.premium_emoji_help_group_id),
     )
 
 
