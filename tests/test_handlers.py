@@ -1699,6 +1699,37 @@ def test_resolve_premium_emojis_wraps_configured_slots() -> None:
     assert emojis.high == "🔼"
 
 
+def test_resolve_premium_emojis_atl_gain_falls_back_to_ath_up() -> None:
+    """``atl_gain`` reuses ``ath_up`` when its own ID is not set."""
+    from zeenova_bot.handlers import _resolve_premium_emojis
+
+    settings = _settings()
+    settings.premium_emoji_ath_up_id = "7777"
+    emojis = _resolve_premium_emojis(settings)
+    assert emojis.ath_up == '<tg-emoji emoji-id="7777">🚀</tg-emoji>'
+    assert emojis.atl_gain == '<tg-emoji emoji-id="7777">🚀</tg-emoji>'
+
+
+def test_resolve_premium_emojis_atl_gain_overrides_ath_up() -> None:
+    """A configured ``atl_gain`` ID decorates only the ATL gain row."""
+    from zeenova_bot.handlers import _resolve_premium_emojis
+
+    settings = _settings()
+    settings.premium_emoji_ath_up_id = "7777"
+    settings.premium_emoji_atl_gain_id = "8888"
+    emojis = _resolve_premium_emojis(settings)
+    assert emojis.ath_up == '<tg-emoji emoji-id="7777">🚀</tg-emoji>'
+    assert emojis.atl_gain == '<tg-emoji emoji-id="8888">🚀</tg-emoji>'
+
+
+def test_resolve_premium_emojis_atl_gain_default_plain() -> None:
+    """Without any ID set, ``atl_gain`` stays the raw fallback glyph."""
+    from zeenova_bot.handlers import _resolve_premium_emojis
+
+    emojis = _resolve_premium_emojis(_settings())
+    assert emojis.atl_gain == "🚀"
+
+
 def test_render_price_card_uses_configured_premium_emojis() -> None:
     """Setting a Premium emoji ID wraps the matching body emoji."""
     from zeenova_bot.card import render_price_card

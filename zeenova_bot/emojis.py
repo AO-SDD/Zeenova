@@ -77,10 +77,11 @@ class PremiumEmojis:
     # /ath card slots
     ath_header: str  # 🏆 /ath header trophy
     diamond: str  # 💎 Current price / wallet balance
-    ath_up: str  # 🚀 ATH section header + "from ATL" gain row
+    ath_up: str  # 🚀 ATH section header
     ath_down: str  # 🩸 ATL section header
     date: str  # 📅 calendar date
     pct_down: str  # 📉 "% from ATH" arrow
+    atl_gain: str  # 🚀 "+X% from ATL" gain row (falls back to ath_up if unset)
     # /wallet card slots
     wallet: str  # 🔍 wallet header
     clock: str  # 🕐 recent-transactions header
@@ -115,6 +116,7 @@ def default_premium_emojis() -> PremiumEmojis:
         ath_down="🩸",
         date="📅",
         pct_down="📉",
+        atl_gain="🚀",
         wallet="🔍",
         clock="🕐",
         gas="⛽",

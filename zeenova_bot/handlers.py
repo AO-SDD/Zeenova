@@ -409,6 +409,10 @@ def _resolve_premium_emojis(settings: Settings) -> PremiumEmojis:
         ath_down=premium_emoji("🩸", settings.premium_emoji_ath_down_id),
         date=premium_emoji("📅", settings.premium_emoji_date_id),
         pct_down=premium_emoji("📉", settings.premium_emoji_pct_down_id),
+        atl_gain=premium_emoji(
+            "🚀",
+            settings.premium_emoji_atl_gain_id or settings.premium_emoji_ath_up_id,
+        ),
         wallet=premium_emoji("🔍", settings.premium_emoji_wallet_id),
         clock=premium_emoji("🕐", settings.premium_emoji_clock_id),
         gas=premium_emoji("⛽", settings.premium_emoji_gas_id),
@@ -766,7 +770,7 @@ def _render_ath(
         f"  {escape(_fmt_unit_price(snap.atl))}\n"
         f"  {e.date} {escape(_fmt_iso_date(snap.atl_date))} "
         f"<i>({escape(atl_ago)})</i>\n"
-        f"  {e.ath_up} <b>{_fmt_change_pct(snap.atl_change_pct)}</b> from ATL\n"
+        f"  {e.atl_gain} <b>{_fmt_change_pct(snap.atl_change_pct)}</b> from ATL\n"
         f"\n"
         f"<i>Data: CoinGecko · {escape(brand_name)}</i>"
     )
