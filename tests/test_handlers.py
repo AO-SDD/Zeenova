@@ -2340,9 +2340,11 @@ async def test_cmd_wallet_reports_when_ens_does_not_resolve() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cmd_wallet_renders_zero_balance_chains() -> None:
-    """All seven chains appear in the Balances grid even when their
-    native balance is zero — the user should see the full footprint."""
+async def test_cmd_wallet_renders_every_supported_chain() -> None:
+    """Every supported chain appears in the Balances grid even when
+    its native balance is zero — the user should see the full
+    footprint, including the long tail of EVM chains."""
+    from zeenova_bot.etherscan import CHAINS
     from zeenova_bot.handlers import cmd_wallet
 
     etherscan = MagicMock()
@@ -2355,12 +2357,10 @@ async def test_cmd_wallet_renders_zero_balance_chains() -> None:
     update, context = _wallet_update_context(etherscan, paprika)
     await cmd_wallet(update, context)
     body = _last_reply(update.effective_message)
-    # Every chain name appears in the card. _wallet_info() wires real
-    # balances on Ethereum + BSC and zero on the rest.
-    for name in (
-        "Ethereum", "BSC", "Polygon", "Arbitrum", "Optimism", "Base", "Avalanche"
-    ):
-        assert name in body, f"expected {name!r} in /wallet card"
+    # The Balances grid lists every chain in CHAINS — old majors,
+    # newer L2s and the long-tail of EVM chains alike.
+    for chain in CHAINS:
+        assert chain.name in body, f"expected {chain.name!r} in /wallet card"
 
 
 @pytest.mark.asyncio
