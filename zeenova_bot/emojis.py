@@ -85,6 +85,7 @@ class PremiumEmojis:
     # /wallet card slots
     wallet: str  # 🔍 wallet header
     clock: str  # 🕐 recent-transactions header
+    wallet_activity: str  # 📊 wallet Activity section header
     gas: str  # ⛽ /gas header
     # /help & /start section icons
     help_header: str  # 📈 brand header
@@ -126,6 +127,7 @@ def default_premium_emojis() -> PremiumEmojis:
         atl_gain="🚀",
         wallet="🔍",
         clock="🕐",
+        wallet_activity="📊",
         gas="⛽",
         help_header="📈",
         help_prices="💹",

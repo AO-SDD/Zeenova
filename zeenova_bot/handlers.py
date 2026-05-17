@@ -422,6 +422,9 @@ def _resolve_premium_emojis(settings: Settings) -> PremiumEmojis:
         ),
         wallet=premium_emoji("🔍", settings.premium_emoji_wallet_id),
         clock=premium_emoji("🕐", settings.premium_emoji_clock_id),
+        wallet_activity=premium_emoji(
+            "📊", settings.premium_emoji_wallet_activity_id
+        ),
         gas=premium_emoji("⛽", settings.premium_emoji_gas_id),
         help_header=premium_emoji("📈", settings.premium_emoji_help_header_id),
         help_prices=premium_emoji("💹", settings.premium_emoji_help_prices_id),
@@ -949,7 +952,7 @@ def _render_wallet(
     active = info.recent_chain
     total_sent = sum(cb.txs_sent for cb in info.balances)
     lines.append("")
-    lines.append("📊 <b>Activity</b>")
+    lines.append(f"{e.wallet_activity} <b>Activity</b>")
     lines.append(f"  Outgoing txs (all chains): <b>{total_sent:,}</b>")
     if active is not None and info.last_tx_at is not None:
         lines.append(
@@ -967,8 +970,6 @@ def _render_wallet(
         lines.extend(
             _render_wallet_tx(tx, active.native_symbol, now) for tx in info.recent
         )
-    lines.append("")
-    lines.append(f"<i>Data: Etherscan · {escape(brand_name)}</i>")
     return "\n".join(lines)
 
 

@@ -2364,6 +2364,50 @@ async def test_cmd_wallet_renders_every_supported_chain() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cmd_wallet_drops_data_source_footer() -> None:
+    """The /wallet card no longer carries a trailing "Data: …" footer."""
+    from zeenova_bot.handlers import cmd_wallet
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    etherscan.fetch_wallet = AsyncMock(return_value=_wallet_info())
+    paprika = MagicMock()
+    paprika.fetch_price_snapshot = AsyncMock(
+        return_value=MagicMock(price_usd=2800.0)
+    )
+    update, context = _wallet_update_context(etherscan, paprika)
+    await cmd_wallet(update, context)
+    body = _last_reply(update.effective_message)
+    assert "Data:" not in body
+    assert "Etherscan" not in body  # neither in body nor footer
+
+
+@pytest.mark.asyncio
+async def test_cmd_wallet_activity_icon_uses_premium_slot() -> None:
+    """Setting PREMIUM_EMOJI_WALLET_ACTIVITY_ID wraps the Activity
+    header glyph in a ``<tg-emoji>`` tag — independent of every other
+    Premium slot."""
+    from zeenova_bot.handlers import cmd_wallet
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    etherscan.fetch_wallet = AsyncMock(return_value=_wallet_info())
+    paprika = MagicMock()
+    paprika.fetch_price_snapshot = AsyncMock(
+        return_value=MagicMock(price_usd=2800.0)
+    )
+    settings = _settings()
+    settings = settings.model_copy(
+        update={"premium_emoji_wallet_activity_id": "5555555555555555555"}
+    )
+    update, context = _wallet_update_context(etherscan, paprika)
+    context.bot_data["settings"] = settings
+    await cmd_wallet(update, context)
+    body = _last_reply(update.effective_message)
+    assert 'emoji-id="5555555555555555555">📊</tg-emoji> <b>Activity</b>' in body
+
+
+@pytest.mark.asyncio
 async def test_cmd_wallet_hint_when_api_key_missing() -> None:
     """Without an API key, the bot replies with a setup hint instead of
     a confusing upstream error."""

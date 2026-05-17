@@ -132,7 +132,7 @@ everywhere.
 | `COINGECKO_API_KEY` | no | empty | Optional Pro key. |
 | `ETHERSCAN_API_KEY` | no | empty | Etherscan V2 key (free at [etherscan.io/apis](https://etherscan.io/apis)) — powers `/wallet` and `/gas`. Without it the bot replies with a short setup hint when either command is invoked. |
 | `PREMIUM_EMOJI_ATH_*_ID`, `PREMIUM_EMOJI_DIAMOND_ID`, `PREMIUM_EMOJI_DATE_ID`, `PREMIUM_EMOJI_PCT_DOWN_ID`, `PREMIUM_EMOJI_ATL_GAIN_ID` | no | empty | Premium custom-emoji IDs for the `/ath` card. `PREMIUM_EMOJI_ATL_GAIN_ID` decorates the "% from ATL" gain row independently of the ATH section header (falls back to `PREMIUM_EMOJI_ATH_UP_ID` when empty). See `.env.example` for the full list. |
-| `PREMIUM_EMOJI_WALLET_ID`, `PREMIUM_EMOJI_CLOCK_ID` | no | empty | Premium custom-emoji IDs for the `/wallet` header and recent-transactions section. |
+| `PREMIUM_EMOJI_WALLET_ID`, `PREMIUM_EMOJI_CLOCK_ID`, `PREMIUM_EMOJI_WALLET_ACTIVITY_ID` | no | empty | Premium custom-emoji IDs for the `/wallet` header, recent-transactions section, and Activity section. |
 | `PREMIUM_EMOJI_GAS_ID` | no | empty | Premium custom-emoji ID for the `/gas` header. |
 | `PREMIUM_EMOJI_HELP_HEADER_ID`, `PREMIUM_EMOJI_HELP_PRICES_ID`, `PREMIUM_EMOJI_HELP_MARKET_ID`, `PREMIUM_EMOJI_HELP_CALC_ID`, `PREMIUM_EMOJI_HELP_FIAT_ID`, `PREMIUM_EMOJI_HELP_GROUP_ID` | no | empty | Premium custom-emoji IDs for the `/start` and `/help` section icons (brand header, Live prices, Market overview, Calculator, Worldwide currencies, Group-friendly). Each one falls back to its plain emoji when unset. |
 | `ALLOWED_CHAT_IDS` | no | empty | Comma-separated chat IDs. |

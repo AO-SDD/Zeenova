@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     # /wallet card slots
     premium_emoji_wallet_id: str = Field(default="")  # 🔍 — wallet header
     premium_emoji_clock_id: str = Field(default="")  # 🕐 — recent transactions header
+    premium_emoji_wallet_activity_id: str = Field(default="")  # 📊 — Activity header
     # /gas card slot
     premium_emoji_gas_id: str = Field(default="")  # ⛽ — /gas header
     # /help & /start section icons
