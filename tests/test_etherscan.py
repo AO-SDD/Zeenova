@@ -65,6 +65,7 @@ def _route_handler(
     nonce_by_chain: dict[int, str] | None = None,
     txlist_response: dict[str, Any] | None = None,
     gas_response: dict[str, Any] | None = None,
+    eth_gas_price_by_chain: dict[int, str] | None = None,
 ) -> Any:
     """Build a MockTransport handler routing on ``action`` + ``chainid``.
 
@@ -115,6 +116,20 @@ def _route_handler(
                     200, json={"status": "0", "message": "unavailable", "result": ""}
                 )
             return httpx.Response(200, json=gas_response)
+        if action == "eth_gasPrice":
+            if eth_gas_price_by_chain is None:
+                return httpx.Response(
+                    200,
+                    json={"jsonrpc": "2.0", "id": 1, "result": "0x0"},
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": eth_gas_price_by_chain.get(chain_id, "0x0"),
+                },
+            )
         return httpx.Response(
             404, json={"status": "0", "message": "unknown action"}
         )
@@ -345,9 +360,10 @@ async def test_fetch_all_gas_returns_empty_without_key() -> None:
 
 @pytest.mark.asyncio
 async def test_fetch_all_gas_drops_unavailable_chains() -> None:
-    """Chains where the gas oracle is offline (status=0 / all-zero
-    tiers) are silently dropped — we never render "0 gwei" rows."""
-    # Etherscan returns status=0 for chains without a gas oracle.
+    """Chains where neither the gas oracle nor ``eth_gasPrice`` produce
+    a usable reading are silently dropped — we never render "0 gwei"."""
+    # Etherscan returns status=0 for chains without a gas oracle and
+    # the eth_gasPrice fallback returns 0x0 (no data) too.
     handler = _route_handler()
     client = EtherscanClient(api_key="dummy")
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -356,3 +372,34 @@ async def test_fetch_all_gas_drops_unavailable_chains() -> None:
     finally:
         await client.aclose()
     assert snaps == ()
+
+
+@pytest.mark.asyncio
+async def test_fetch_all_gas_falls_back_to_eth_gas_price() -> None:
+    """Chains without a gas oracle (BSC, Optimism, Base, Avalanche)
+    still produce a row via the ``proxy/eth_gasPrice`` fallback. We
+    synthesise Safe/Standard/Fast tiers as 0.9x / 1.0x / 1.15x around
+    the network's current gas price."""
+    # 5 gwei == 5_000_000_000 wei == 0x12a05f200
+    handler = _route_handler(
+        eth_gas_price_by_chain={
+            56: "0x12a05f200",  # 5 gwei — BSC
+            8453: "0x3b9aca00",  # 1 gwei — Base
+        }
+    )
+    client = EtherscanClient(api_key="dummy")
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        snaps = await client.fetch_all_gas()
+    finally:
+        await client.aclose()
+    by_id = {snap.chain.id: snap for snap in snaps}
+    # Both chains surface a row even though the oracle was unavailable.
+    assert 56 in by_id
+    assert 8453 in by_id
+    bsc = by_id[56]
+    assert bsc.tier.standard_gwei == pytest.approx(5.0)
+    assert bsc.tier.safe_gwei == pytest.approx(5.0 * 0.9)
+    assert bsc.tier.fast_gwei == pytest.approx(5.0 * 1.15)
+    base = by_id[8453]
+    assert base.tier.standard_gwei == pytest.approx(1.0)

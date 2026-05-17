@@ -2247,8 +2247,84 @@ async def test_cmd_wallet_rejects_invalid_address() -> None:
     )
     await cmd_wallet(update, context)
     body = _last_reply(update.effective_message)
-    assert "valid Ethereum address" in body
+    assert "valid Ethereum address or ENS name" in body
     etherscan.fetch_wallet.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cmd_wallet_resolves_ens_name_to_address() -> None:
+    """``/wallet vitalik.eth`` resolves to the canonical 0x address and
+    renders the same card. The ENS name is shown next to the short
+    address in the header."""
+    from zeenova_bot.handlers import cmd_wallet
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    etherscan.fetch_wallet = AsyncMock(return_value=_wallet_info())
+    paprika = MagicMock()
+    paprika.fetch_price_snapshot = AsyncMock(
+        return_value=MagicMock(price_usd=2800.0)
+    )
+    ens = MagicMock()
+    ens.resolve = AsyncMock(
+        return_value="0xd8da6bf26964af9d7eed9e03e53415d37aa96045"
+    )
+    update, context = _wallet_update_context(
+        etherscan, paprika, args=["vitalik.eth"]
+    )
+    context.bot_data["ens"] = ens
+    await cmd_wallet(update, context)
+    ens.resolve.assert_awaited_once_with("vitalik.eth")
+    etherscan.fetch_wallet.assert_awaited_once_with(
+        "0xd8da6bf26964af9d7eed9e03e53415d37aa96045"
+    )
+    body = _last_reply(update.effective_message)
+    assert "vitalik.eth" in body
+    assert "0xd8da…6045" in body
+
+
+@pytest.mark.asyncio
+async def test_cmd_wallet_reports_when_ens_does_not_resolve() -> None:
+    from zeenova_bot.handlers import cmd_wallet
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    etherscan.fetch_wallet = AsyncMock()
+    ens = MagicMock()
+    ens.resolve = AsyncMock(return_value=None)
+    update, context = _wallet_update_context(
+        etherscan, None, args=["bogus-name.eth"]
+    )
+    context.bot_data["ens"] = ens
+    await cmd_wallet(update, context)
+    body = _last_reply(update.effective_message)
+    assert "Couldn't resolve" in body
+    assert "bogus-name.eth" in body
+    etherscan.fetch_wallet.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cmd_wallet_renders_zero_balance_chains() -> None:
+    """All seven chains appear in the Balances grid even when their
+    native balance is zero — the user should see the full footprint."""
+    from zeenova_bot.handlers import cmd_wallet
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    etherscan.fetch_wallet = AsyncMock(return_value=_wallet_info())
+    paprika = MagicMock()
+    paprika.fetch_price_snapshot = AsyncMock(
+        return_value=MagicMock(price_usd=2800.0)
+    )
+    update, context = _wallet_update_context(etherscan, paprika)
+    await cmd_wallet(update, context)
+    body = _last_reply(update.effective_message)
+    # Every chain name appears in the card. _wallet_info() wires real
+    # balances on Ethereum + BSC and zero on the rest.
+    for name in (
+        "Ethereum", "BSC", "Polygon", "Arbitrum", "Optimism", "Base", "Avalanche"
+    ):
+        assert name in body, f"expected {name!r} in /wallet card"
 
 
 @pytest.mark.asyncio
