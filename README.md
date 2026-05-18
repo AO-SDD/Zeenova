@@ -46,17 +46,21 @@ Built for the **Zeen** community channels:
   show native-token balance and USD value across 20 EVM chains
   (Ethereum, BSC, Polygon, Arbitrum, Optimism, Base, Avalanche, Linea,
   Blast, Mantle, Sonic, Unichain, Berachain, Gnosis, Celo, Sei,
-  Moonbeam, HyperEVM, Abstract, Plasma — every chain is shown, even
-  zero-balance rows), with a combined total and the 5 most recent
-  transactions on the wallet's most-active chain. Solana addresses are
-  detected automatically (base58, 32–44 chars) and routed through the
-  Solana JSON-RPC for the SOL balance, USD value, and 5 most recent
-  signatures with their success/fail status. ENS names are resolved
-  through a public free gateway so you can look up wallets by their
-  ENS handle (e.g. `vitalik.eth`). EVM coverage is powered by the free
-  Etherscan V2 API (one key, 60+ chains); Solana coverage uses the
-  public mainnet RPC by default and can be pointed at a paid provider
-  via `SOLANA_RPC_URL`.
+  Moonbeam, HyperEVM, Abstract, Plasma). The card opens with the
+  combined total, an "Active since" line carrying the wallet's first
+  transaction date plus age in days, and a tree-style breakdown sorted
+  by USD value with a per-chain percentage. Chains with no native
+  balance collapse into a single "Inactive on: …" line so the card
+  stays scannable. The 5 most recent transactions on the wallet's
+  most-active chain follow. Solana addresses are detected automatically
+  (base58, 32–44 chars) and routed through the Solana JSON-RPC for the
+  SOL balance, USD value, and 5 most recent signatures with their
+  success/fail status. ENS names are resolved through a public free
+  gateway so you can look up wallets by their ENS handle (e.g.
+  `vitalik.eth`). EVM coverage is powered by the free Etherscan V2 API
+  (one key, 60+ chains); Solana coverage uses the public mainnet RPC
+  by default and can be pointed at a paid provider via
+  `SOLANA_RPC_URL`.
 - `/gas` — live gas rates (Safe / Standard / Fast in gwei) on every
   supported chain — chains without a gastracker oracle fall back to
   `eth_gasPrice` so you still get a reading. Each tier is annotated

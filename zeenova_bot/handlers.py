@@ -53,6 +53,7 @@ from .emojis import PremiumEmojis, default_premium_emojis, premium_emoji
 from .ens import EnsClient, looks_like_ens
 from .etherscan import (
     CHAINS,
+    ChainBalance,
     ChainGas,
     EtherscanClient,
     WalletInfo,
@@ -907,16 +908,37 @@ def _render_wallet(
 
     ``ens_name`` is shown next to the short address when the user
     looked the wallet up by ENS name (e.g. ``vitalik.eth``).
+
+    Layout (matches the "Not Slava" reference card the team liked):
+
+    * Header with shortened address (+ ENS name when applicable).
+    * Total USD across every chain with a known price.
+    * "Active since" line — first-tx date and how many days ago.
+    * Tree-style breakdown sorted by USD value descending. Chains
+      with a non-zero native balance get their own row; chains with
+      no balance are collapsed into a single "Inactive on:" line so
+      the card stays readable for wallets that only use 2-3 chains.
     """
     e = emojis if emojis is not None else default_premium_emojis()
     now = int(datetime.now(UTC).timestamp())
-    total_usd = 0.0
+
+    # Partition chains: those with native balance render in the tree
+    # body; the rest collapse into the trailing "Inactive on:" line.
+    funded: list[tuple[ChainBalance, float, float]] = []  # (cb, px, usd)
+    empty: list[ChainBalance] = []
     for cb in info.balances:
         if cb.balance_wei <= 0:
+            empty.append(cb)
             continue
         px = prices.get(cb.chain.price_symbol, 0.0)
-        if px > 0:
-            total_usd += cb.balance * px
+        usd = cb.balance * px if px > 0 else 0.0
+        funded.append((cb, px, usd))
+    # Sort funded rows by USD value descending; rows without a price
+    # (``usd == 0.0``) sink to the bottom but keep their native amount
+    # ordering by native magnitude so the highest-value-first promise
+    # holds even when paprika is down for one chain.
+    funded.sort(key=lambda row: (row[2], row[0].balance), reverse=True)
+    total_usd = sum(usd for _, _, usd in funded)
 
     if ens_name:
         header = (
@@ -935,20 +957,46 @@ def _render_wallet(
         )
         lines.append("")
 
-    if info.balances:
+    if info.first_tx_at is not None:
+        active_since = datetime.fromtimestamp(info.first_tx_at, UTC)
+        days = max(0, (now - info.first_tx_at) // 86_400)
+        days_label = "day" if days == 1 else "days"
+        lines.append(
+            f"{e.date} <b>Active since:</b> "
+            f"<code>{active_since:%Y-%m-%d}</code> "
+            f"<i>({days:,} {days_label})</i>"
+        )
+        lines.append("")
+
+    if funded:
         lines.append(f"{e.diamond} <b>Balances</b>")
-        for cb in info.balances:
-            px = prices.get(cb.chain.price_symbol, 0.0)
+        for i, (cb, _px, usd) in enumerate(funded):
+            connector = "└──" if i == len(funded) - 1 else "├──"
+            pct_str = (
+                f" <i>({usd / total_usd * 100:.1f}%)</i>"
+                if total_usd > 0 and usd > 0
+                else ""
+            )
             usd_str = (
-                f"  ≈ {escape(_fmt_usd_compact(cb.balance * px))}"
-                if px > 0 and cb.balance_wei > 0
+                f"  ≈ {escape(_fmt_usd_compact(usd))}{pct_str}"
+                if usd > 0
                 else ""
             )
             lines.append(
-                f"  <b>{escape(cb.chain.name):<10}</b> "
+                f"  <code>{connector}</code> "
+                f"<b>{escape(cb.chain.name)}</b> "
                 f"<code>{escape(_fmt_native(cb.balance))} "
                 f"{escape(cb.chain.native_symbol)}</code>{usd_str}"
             )
+        if empty:
+            inactive = ", ".join(escape(cb.chain.name) for cb in empty)
+            lines.append(f"  <i>Inactive on:</i> {inactive}")
+    elif empty:
+        lines.append(
+            f"{e.diamond} <i>No native-token balance on any tracked chain.</i>"
+        )
+        inactive = ", ".join(escape(cb.chain.name) for cb in empty)
+        lines.append(f"  <i>Scanned:</i> {inactive}")
     else:
         lines.append(
             f"{e.diamond} <i>No native-token balance on any tracked chain.</i>"

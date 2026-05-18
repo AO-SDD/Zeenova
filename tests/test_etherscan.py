@@ -197,6 +197,69 @@ async def test_fetch_wallet_aggregates_balances_and_picks_active_chain() -> None
     # BSC row carries the non-zero balance we wired in.
     bsc = next(cb for cb in info.balances if cb.chain.id == 56)
     assert bsc.balance_wei == 1_500_000_000_000_000_000
+    # ``first_tx_at`` should be populated from the first row of the
+    # ascending txlist (the mock returns the same body for both sort
+    # directions, so this is the latest-row timestamp in our fixture).
+    assert info.first_tx_at == 1_730_000_000
+
+
+@pytest.mark.asyncio
+async def test_fetch_wallet_requests_first_tx_via_txlist_asc() -> None:
+    """The ``_first_tx_at`` call must hit ``txlist`` with ``sort=asc``
+    and ``offset=1`` so we pay for exactly one row. Capturing the
+    request lets the test fail loudly if the implementation ever
+    drifts back to fetching the whole history."""
+    captured: list[dict[str, list[str]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        parsed = urlparse(str(request.url))
+        params = parse_qs(parsed.query)
+        captured.append(params)
+        action = (params.get("action") or [""])[0]
+        if action == "balance":
+            return httpx.Response(
+                200, json={"status": "1", "message": "OK", "result": "1"}
+            )
+        if action == "eth_getTransactionCount":
+            return httpx.Response(
+                200, json={"jsonrpc": "2.0", "id": 1, "result": "0x1"}
+            )
+        if action == "txlist":
+            return httpx.Response(
+                200,
+                json={
+                    "status": "1",
+                    "message": "OK",
+                    "result": [
+                        {
+                            "hash": "0xfirst",
+                            "timeStamp": "1587175200",
+                            "from": VITALIK.lower(),
+                            "to": "0x" + "1" * 40,
+                            "value": "0",
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(200, json={"status": "0", "result": ""})
+
+    client = EtherscanClient(api_key="dummy")
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        info = await client.fetch_wallet(VITALIK)
+    finally:
+        await client.aclose()
+    assert info is not None
+    assert info.first_tx_at == 1_587_175_200
+    # Exactly one ``txlist`` request used ``sort=asc`` + ``offset=1``.
+    asc_calls = [
+        p
+        for p in captured
+        if (p.get("action") or [""])[0] == "txlist"
+        and (p.get("sort") or [""])[0] == "asc"
+        and (p.get("offset") or [""])[0] == "1"
+    ]
+    assert len(asc_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -254,10 +317,11 @@ async def test_fetch_wallet_caches_per_address() -> None:
     finally:
         await client.aclose()
     assert first is second
-    # First call: 2 × N (balance + nonce per chain) + 1 (txlist on the
-    # single most-active chain). Second call hits the cache → no
-    # extra requests.
-    assert len(calls) == 2 * N_CHAINS + 1
+    # First call: 2 × N (balance + nonce per chain) + 2 (txlist desc
+    # for recent + txlist asc for "active since" on the single
+    # most-active chain). Second call hits the cache → no extra
+    # requests.
+    assert len(calls) == 2 * N_CHAINS + 2
 
 
 @pytest.mark.asyncio
