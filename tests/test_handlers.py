@@ -2906,3 +2906,105 @@ async def test_cmd_gas_renders_without_paprika_prices() -> None:
     assert "gwei" in body
     # No USD estimate column when prices are unavailable.
     assert "~$" not in body
+
+
+# ---------------------------------------------------------------------------
+# UTC/GMT time-detection auto-reply (no command — fires inside on_text).
+# ---------------------------------------------------------------------------
+
+
+def _utc_update_context(text: str) -> tuple[MagicMock, MagicMock]:
+    """Wire up a minimal Update + Context for the UTC auto-reply path."""
+    msg = MagicMock()
+    msg.text = text
+    msg.reply_text = AsyncMock()
+    msg.reply_html = AsyncMock()
+    msg.reply_sticker = AsyncMock()
+    msg.quote = None
+    msg.reply_to_message = None
+
+    update = MagicMock()
+    update.effective_message = msg
+    chat = MagicMock()
+    chat.type = ChatType.GROUP
+    chat.id = 1
+    update.effective_chat = chat
+
+    fx = MagicMock()
+    fx.supports = AsyncMock(return_value=False)
+    service = MagicMock()
+    service.resolve = AsyncMock(return_value=None)
+    quote_client = MagicMock()
+    quote_client.render = AsyncMock(return_value=None)
+    context = MagicMock()
+    context.bot = MagicMock()
+    context.bot_data = {
+        "settings": _settings(),
+        "fx": fx,
+        "service": service,
+        "quote_sticker": quote_client,
+    }
+    return update, context
+
+
+@pytest.mark.asyncio
+async def test_on_text_replies_with_utc_card_for_bare_hour() -> None:
+    """A message containing ``13 UTC`` triggers the conversion card."""
+    from zeenova_bot.handlers import on_text
+
+    update, context = _utc_update_context("13 UTC")
+    await on_text(update, context)
+    msg = update.effective_message
+    msg.reply_html.assert_awaited_once()
+    body = msg.reply_html.call_args.args[0]
+    assert "13:00 UTC" in body
+    assert "Cairo" in body
+    assert "Moscow" in body
+
+
+@pytest.mark.asyncio
+async def test_on_text_replies_with_utc_card_for_colon_form() -> None:
+    """``13:30 UTC`` is normalised to ``13:30`` in the card header."""
+    from zeenova_bot.handlers import on_text
+
+    update, context = _utc_update_context("see you at 13:30 UTC")
+    await on_text(update, context)
+    body = update.effective_message.reply_html.call_args.args[0]
+    assert "13:30 UTC" in body
+
+
+@pytest.mark.asyncio
+async def test_on_text_replies_with_utc_card_for_pm_form() -> None:
+    """``1:30 PM UTC`` is normalised to 13:30 UTC, not 01:30."""
+    from zeenova_bot.handlers import on_text
+
+    update, context = _utc_update_context("1:30 PM UTC")
+    await on_text(update, context)
+    body = update.effective_message.reply_html.call_args.args[0]
+    assert "13:30 UTC" in body
+
+
+@pytest.mark.asyncio
+async def test_on_text_ignores_messages_without_utc_marker() -> None:
+    """Bare numbers without UTC must not trigger the card — otherwise
+    the bot would chime in on every "I have 13 …" message."""
+    from zeenova_bot.handlers import on_text
+
+    update, context = _utc_update_context("I have 13 messages")
+    await on_text(update, context)
+    update.effective_message.reply_html.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_on_text_utc_wins_over_calc_handler() -> None:
+    """``13 UTC`` would otherwise be claimed by the calc handler as a
+    bogus currency conversion. UTC detection runs first so the user
+    gets the time card instead of an "Unsupported currency" error."""
+    from zeenova_bot.handlers import on_text
+
+    update, context = _utc_update_context("13 UTC")
+    await on_text(update, context)
+    msg = update.effective_message
+    msg.reply_html.assert_awaited_once()
+    # No calc fallback message.
+    msg.reply_text.assert_not_called()
