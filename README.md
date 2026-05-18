@@ -63,6 +63,12 @@ Built for the **Zeen** community channels:
   with an approximate USD cost for a 21k-gas native transfer. Uses the
   same Etherscan V2 key as `/wallet`; results are cached for 20 s per
   chain.
+- **UTC time references** — when any chat message contains a time
+  written in UTC/GMT (`13 UTC`, `13:30 UTC`, `1:30 PM UTC`,
+  `0900 GMT`, …), the bot replies with the local time in Cairo and
+  Moscow. Detection is intentionally tight: messages without an
+  explicit `UTC`/`GMT` marker (like "I have 13 messages") are
+  ignored. DST is honoured via `zoneinfo`.
 
 ### Calculator & conversions
 - Plain math with full operator precedence: `2+3*4`, `(1+2)*3`, `2^10`,

@@ -82,6 +82,7 @@ from .solana import (
     is_valid_solana_address,
 )
 from .timeframes import DEFAULT_TIMEFRAME, TIMEFRAMES, Timeframe, get_timeframe
+from .timezones import detect_utc_time, format_utc_card
 
 __all__ = [
     "build_application",
@@ -1514,6 +1515,25 @@ def _select_quote_text(
     return "", []
 
 
+async def _maybe_reply_utc_time(update: Update, text: str) -> bool:
+    """Detect a UTC/GMT time reference in ``text`` and reply with a
+    converted-times card. Returns ``True`` when a reply was sent so
+    the caller can short-circuit subsequent handlers.
+
+    No-ops for messages that don't contain a recognised UTC time —
+    callers fall through to calc / symbol matching as before.
+    """
+    parsed = detect_utc_time(text)
+    if parsed is None:
+        return False
+    msg = update.effective_message
+    if msg is None:
+        return False
+    body = format_utc_card(parsed)
+    await msg.reply_html(body, disable_web_page_preview=True)
+    return True
+
+
 async def _maybe_make_quote_sticker(
     update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
 ) -> bool:
@@ -1785,6 +1805,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _maybe_make_quote_sticker(update, context, text):
         return
 
+    # UTC/GMT time references ("13 UTC", "1:30 PM UTC", "0900 GMT", …)
+    # are detected before calc because the calculator otherwise tries
+    # to read ``UTC`` as a currency code and replies with "Unsupported
+    # currency pair", which would shadow the conversion card.
+    if await _maybe_reply_utc_time(update, text):
+        return
+
     # Calc / FX first: anything with a digit may be ``2+2``, ``1 usd egp``,
     # ``2+2/4 btc``, etc. ``handle_calc`` returns True if it claimed the
     # message; otherwise we fall through to the bare-symbol handler.
@@ -1843,6 +1870,12 @@ async def on_edited_text(
             timeframe=DEFAULT_TIMEFRAME,
             notify_if_unknown=True,
         )
+        return
+
+    # UTC/GMT time conversion runs ahead of calc for the same reason
+    # as in ``on_text``: "13 UTC" otherwise gets mis-parsed as a
+    # currency conversion request.
+    if await _maybe_reply_utc_time(update, text):
         return
 
     # Calc / FX edits.
