@@ -69,10 +69,11 @@ Built for the **Zeen** community channels:
   chain.
 - **UTC time references** — when any chat message contains a time
   written in UTC/GMT (`13 UTC`, `13:30 UTC`, `1:30 PM UTC`,
-  `0900 GMT`, …), the bot replies with the local time in Cairo and
-  Moscow. Detection is intentionally tight: messages without an
+  `0900 GMT`, …), the bot replies with the local time in **Cairo**,
+  **CET** (Central Europe), **MSK** (Moscow), and **CST** (US
+  Central). Detection is intentionally tight: messages without an
   explicit `UTC`/`GMT` marker (like "I have 13 messages") are
-  ignored. DST is honoured via `zoneinfo`.
+  ignored. DST is honoured via `zoneinfo` for every zone.
 
 ### Calculator & conversions
 - Plain math with full operator precedence: `2+3*4`, `(1+2)*3`, `2^10`,

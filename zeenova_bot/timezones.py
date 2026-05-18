@@ -17,12 +17,16 @@ from datetime import UTC, date, datetime, time, timedelta
 from html import escape
 from zoneinfo import ZoneInfo
 
-# Cities shown in the reply, in display order. The team picked Cairo
-# (their home market) and Moscow (the other major timezone they
-# coordinate trades against).
+# Timezones shown in the reply, in display order. Cairo (the team's
+# home market) comes first, then the major regions traders coordinate
+# against: Central Europe, Moscow, and US Central. Labels use the
+# common IANA / market abbreviations rather than city + flag so the
+# card stays compact and free of country-specific iconography.
 TIMEZONES: tuple[tuple[str, str], ...] = (
-    ("🇪🇬 Cairo", "Africa/Cairo"),
-    ("🇷🇺 Moscow", "Europe/Moscow"),
+    ("Cairo", "Africa/Cairo"),
+    ("CET", "Europe/Berlin"),
+    ("MSK", "Europe/Moscow"),
+    ("CST", "America/Chicago"),
 )
 
 

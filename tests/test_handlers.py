@@ -2959,7 +2959,9 @@ async def test_on_text_replies_with_utc_card_for_bare_hour() -> None:
     body = msg.reply_html.call_args.args[0]
     assert "13:00 UTC" in body
     assert "Cairo" in body
-    assert "Moscow" in body
+    assert "CET" in body
+    assert "MSK" in body
+    assert "CST" in body
 
 
 @pytest.mark.asyncio

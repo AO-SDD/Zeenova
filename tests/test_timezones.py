@@ -102,14 +102,21 @@ class TestDetectUtcTime:
 
 
 class TestFormatUtcCard:
-    def test_renders_cairo_and_moscow_rows(self) -> None:
+    def test_renders_all_four_timezone_rows(self) -> None:
         parsed = ParsedUtcTime(hour=13, minute=0, matched="13 UTC")
         body = format_utc_card(parsed, today=date(2026, 5, 6))
-        assert "🇪🇬 Cairo" in body
-        assert "🇷🇺 Moscow" in body
-        # The team explicitly asked for only these two cities.
+        # The team picked these four (Cairo + CET + MSK + CST) and
+        # explicitly asked for no flags on any row.
+        assert "Cairo" in body
+        assert "CET" in body
+        assert "MSK" in body
+        assert "CST" in body
+        # Removed earlier timezones / flag glyphs must not regress.
+        assert "Moscow" not in body
         assert "Riyadh" not in body
         assert "Dubai" not in body
+        assert "🇪🇬" not in body
+        assert "🇷🇺" not in body
 
     def test_header_carries_normalised_24h_time(self) -> None:
         parsed = ParsedUtcTime(hour=13, minute=30, matched="1:30 PM UTC")
@@ -132,12 +139,52 @@ class TestFormatUtcCard:
         cairo_line = next(line for line in body.splitlines() if "Cairo" in line)
         assert "16:00" in cairo_line
 
-    def test_moscow_is_three_hours_ahead(self) -> None:
+    def test_cet_is_two_hours_ahead_in_summer(self) -> None:
+        # 2026-05-06 → Central Europe is on DST (CEST, UTC+2).
+        parsed = ParsedUtcTime(hour=13, minute=0, matched="13 UTC")
+        body = format_utc_card(parsed, today=date(2026, 5, 6))
+        cet_line = next(
+            line for line in body.splitlines() if line.lstrip().startswith("CET")
+        )
+        assert "15:00" in cet_line
+
+    def test_cet_is_one_hour_ahead_in_winter(self) -> None:
+        # 2026-01-15 → off DST (CET, UTC+1).
+        parsed = ParsedUtcTime(hour=13, minute=0, matched="13 UTC")
+        body = format_utc_card(parsed, today=date(2026, 1, 15))
+        cet_line = next(
+            line for line in body.splitlines() if line.lstrip().startswith("CET")
+        )
+        assert "14:00" in cet_line
+
+    def test_msk_is_three_hours_ahead(self) -> None:
         # Moscow has been a fixed UTC+3 since 2014 (no DST).
         parsed = ParsedUtcTime(hour=13, minute=0, matched="13 UTC")
         body = format_utc_card(parsed, today=date(2026, 5, 6))
-        moscow_line = next(line for line in body.splitlines() if "Moscow" in line)
-        assert "16:00" in moscow_line
+        msk_line = next(
+            line for line in body.splitlines() if line.lstrip().startswith("MSK")
+        )
+        assert "16:00" in msk_line
+
+    def test_cst_is_five_hours_behind_in_summer(self) -> None:
+        # 2026-05-06 → US Central is on DST (CDT, UTC-5). 13:00 UTC
+        # becomes 08:00 in Chicago.
+        parsed = ParsedUtcTime(hour=13, minute=0, matched="13 UTC")
+        body = format_utc_card(parsed, today=date(2026, 5, 6))
+        cst_line = next(
+            line for line in body.splitlines() if line.lstrip().startswith("CST")
+        )
+        assert "08:00" in cst_line
+
+    def test_cst_is_six_hours_behind_in_winter(self) -> None:
+        # 2026-01-15 → off DST (CST proper, UTC-6). 13:00 UTC becomes
+        # 07:00 in Chicago.
+        parsed = ParsedUtcTime(hour=13, minute=0, matched="13 UTC")
+        body = format_utc_card(parsed, today=date(2026, 1, 15))
+        cst_line = next(
+            line for line in body.splitlines() if line.lstrip().startswith("CST")
+        )
+        assert "07:00" in cst_line
 
     def test_next_day_tag_for_late_utc_hour(self) -> None:
         # 23:00 UTC → 02:00 Cairo *next day*. The badge keeps it from
@@ -148,8 +195,21 @@ class TestFormatUtcCard:
         assert "02:00" in cairo_line
         assert "next day" in cairo_line
 
+    def test_prev_day_tag_for_early_utc_in_cst(self) -> None:
+        # 05:00 UTC in January → 23:00 Chicago *previous day*. CST is
+        # the only row in our set that can land on the previous day so
+        # this exercises the negative-delta branch.
+        parsed = ParsedUtcTime(hour=5, minute=0, matched="5 UTC")
+        body = format_utc_card(parsed, today=date(2026, 1, 15))
+        cst_line = next(
+            line for line in body.splitlines() if line.lstrip().startswith("CST")
+        )
+        assert "23:00" in cst_line
+        assert "prev day" in cst_line
+
     def test_no_next_day_tag_during_normal_hours(self) -> None:
         parsed = ParsedUtcTime(hour=10, minute=0, matched="10 UTC")
         body = format_utc_card(parsed, today=date(2026, 5, 6))
         assert "next day" not in body
+        # CST at 10:00 UTC is the same calendar day.
         assert "prev day" not in body
