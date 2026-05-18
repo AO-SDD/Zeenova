@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     # works across all 60+ Etherscan-family chains via the V2 multichain
     # API; for now we only query Ethereum mainnet (chainid=1).
     etherscan_api_key: str = Field(default="", description="Optional Etherscan V2 key (powers /wallet)")
+    # Solana JSON-RPC endpoint. Defaults to the public mainnet RPC,
+    # which is fine for low-volume operators. For higher rate limits,
+    # set this to a paid endpoint URL — most providers (Helius,
+    # QuickNode, Triton, …) put the secret in the URL itself, e.g.
+    # ``https://mainnet.helius-rpc.com/?api-key=YOUR_KEY``.
+    solana_rpc_url: str = Field(default="", description="Optional Solana RPC URL")
     allowed_chat_ids: str = Field(
         default="",
         description="Optional comma-separated chat IDs the bot may respond to",

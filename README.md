@@ -41,16 +41,22 @@ Built for the **Zeen** community channels:
 - `/ath SYMBOL` — all-time-high / all-time-low snapshot for any coin:
   ATH price + date + how far below ATH the current price sits, plus the
   same for ATL. Sourced from CoinGecko, cached for an hour per coin.
-- `/wallet 0x…` or `/wallet name.eth` — multichain wallet summary:
-  native-token balance and USD value across 20 EVM chains
+- `/wallet 0x…`, `/wallet name.eth`, or `/wallet <solana base58>` —
+  multichain wallet summary. EVM addresses (and resolved ENS names)
+  show native-token balance and USD value across 20 EVM chains
   (Ethereum, BSC, Polygon, Arbitrum, Optimism, Base, Avalanche, Linea,
   Blast, Mantle, Sonic, Unichain, Berachain, Gnosis, Celo, Sei,
   Moonbeam, HyperEVM, Abstract, Plasma — every chain is shown, even
   zero-balance rows), with a combined total and the 5 most recent
-  transactions on the wallet's most-active chain. ENS names are
-  resolved through a public free gateway so you can look up wallets by
-  their ENS handle (e.g. `vitalik.eth`). Powered by the free Etherscan
-  V2 API (one key, 60+ chains).
+  transactions on the wallet's most-active chain. Solana addresses are
+  detected automatically (base58, 32–44 chars) and routed through the
+  Solana JSON-RPC for the SOL balance, USD value, and 5 most recent
+  signatures with their success/fail status. ENS names are resolved
+  through a public free gateway so you can look up wallets by their
+  ENS handle (e.g. `vitalik.eth`). EVM coverage is powered by the free
+  Etherscan V2 API (one key, 60+ chains); Solana coverage uses the
+  public mainnet RPC by default and can be pointed at a paid provider
+  via `SOLANA_RPC_URL`.
 - `/gas` — live gas rates (Safe / Standard / Fast in gwei) on every
   supported chain — chains without a gastracker oracle fall back to
   `eth_gasPrice` so you still get a reading. Each tier is annotated
@@ -131,6 +137,7 @@ everywhere.
 | `TELEGRAM_BOT_TOKEN` | yes | — | Token from BotFather. |
 | `COINGECKO_API_KEY` | no | empty | Optional Pro key. |
 | `ETHERSCAN_API_KEY` | no | empty | Etherscan V2 key (free at [etherscan.io/apis](https://etherscan.io/apis)) — powers `/wallet` and `/gas`. Without it the bot replies with a short setup hint when either command is invoked. |
+| `SOLANA_RPC_URL` | no | empty (uses `https://api.mainnet-beta.solana.com`) | Solana JSON-RPC endpoint. Override to a paid provider (Helius, QuickNode, …) when the public RPC starts rate-limiting. Most providers embed the secret in the URL itself. |
 | `PREMIUM_EMOJI_ATH_*_ID`, `PREMIUM_EMOJI_DIAMOND_ID`, `PREMIUM_EMOJI_DATE_ID`, `PREMIUM_EMOJI_PCT_DOWN_ID`, `PREMIUM_EMOJI_ATL_GAIN_ID` | no | empty | Premium custom-emoji IDs for the `/ath` card. `PREMIUM_EMOJI_ATL_GAIN_ID` decorates the "% from ATL" gain row independently of the ATH section header (falls back to `PREMIUM_EMOJI_ATH_UP_ID` when empty). See `.env.example` for the full list. |
 | `PREMIUM_EMOJI_WALLET_ID`, `PREMIUM_EMOJI_CLOCK_ID`, `PREMIUM_EMOJI_WALLET_ACTIVITY_ID` | no | empty | Premium custom-emoji IDs for the `/wallet` header, recent-transactions section, and Activity section. |
 | `PREMIUM_EMOJI_GAS_ID` | no | empty | Premium custom-emoji ID for the `/gas` header. |

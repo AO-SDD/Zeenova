@@ -24,6 +24,8 @@ from .mexc import MexcClient
 from .news import NewsClient
 from .quote_sticker import QuoteStickerClient
 from .services import CoinService
+from .solana import DEFAULT_RPC_URL as DEFAULT_SOLANA_RPC_URL
+from .solana import SolanaClient
 
 # Slash-command menu published to Telegram on startup. Telegram shows
 # these in the autocomplete drawer when users type ``/`` and in the
@@ -77,6 +79,9 @@ def main() -> None:
     news = NewsClient()
     etherscan = EtherscanClient(api_key=settings.etherscan_api_key)
     ens = EnsClient()
+    solana = SolanaClient(
+        rpc_url=settings.solana_rpc_url or DEFAULT_SOLANA_RPC_URL,
+    )
 
     app = build_application(settings, service, fx)
     # /top and /market need the raw CoinPaprika client (the rest of the
@@ -98,6 +103,9 @@ def main() -> None:
     # /wallet also accepts ENS names (e.g. ``vitalik.eth``) resolved
     # through a public free gateway. No API key required.
     app.bot_data["ens"] = ens
+    # /wallet routes base58 addresses to the Solana JSON-RPC client.
+    # No API key required for the default public RPC.
+    app.bot_data["solana"] = solana
 
     async def _post_init(application: Application) -> None:  # type: ignore[type-arg]
         # Publish the slash-command menu so Telegram's native autocomplete

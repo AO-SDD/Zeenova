@@ -75,6 +75,12 @@ from .services import (
     CoinService,
     MarketData,
 )
+from .solana import (
+    SolanaClient,
+    SolanaTx,
+    SolanaWalletInfo,
+    is_valid_solana_address,
+)
 from .timeframes import DEFAULT_TIMEFRAME, TIMEFRAMES, Timeframe, get_timeframe
 
 __all__ = [
@@ -168,11 +174,12 @@ def _help_text(
         "outlets (CoinDesk, Cointelegraph, Decrypt).\n"
         "• <code>/ath SYMBOL</code> — all-time-high and all-time-low "
         "records (e.g. <code>/ath btc</code>).\n"
-        "• <code>/wallet 0x…</code> or <code>/wallet name.eth</code> — "
-        "multichain wallet summary: native balance + USD across 20 EVM "
-        "chains (Ethereum, BSC, Polygon, Arbitrum, Optimism, Base, "
-        "Avalanche, Linea, Blast, Mantle, Sonic, Unichain, Berachain, "
-        "Gnosis, Celo, Sei, Moonbeam, HyperEVM, Abstract, Plasma).\n"
+        "• <code>/wallet 0x…</code>, <code>/wallet name.eth</code>, or "
+        "<code>/wallet &lt;solana base58&gt;</code> — multichain wallet "
+        "summary: native balance + USD across 20 EVM chains (Ethereum, "
+        "BSC, Polygon, Arbitrum, Optimism, Base, Avalanche, Linea, "
+        "Blast, Mantle, Sonic, Unichain, Berachain, Gnosis, Celo, Sei, "
+        "Moonbeam, HyperEVM, Abstract, Plasma) plus Solana.\n"
         "• <code>/gas</code> — live gas rates across every supported "
         "chain with a USD estimate per tier.\n\n"
         f"<b>{e.help_calc} Calculator &amp; conversion</b>\n"
@@ -973,6 +980,106 @@ def _render_wallet(
     return "\n".join(lines)
 
 
+def _short_sol_addr(address: str) -> str:
+    """Shorten a Solana base58 address to ``ABCD…1234`` form."""
+    if len(address) < 10:
+        return address
+    return f"{address[:4]}…{address[-4:]}"
+
+
+def _short_sig(signature: str) -> str:
+    """Shorten a Solana signature for the recent-transactions grid."""
+    if len(signature) < 12:
+        return signature
+    return f"{signature[:6]}…{signature[-4:]}"
+
+
+def _render_solana_wallet_tx(tx: SolanaTx, now_ts: int) -> str:
+    """One ``recent transactions`` line for the Solana card."""
+    status = "✗" if tx.is_failed else "✓"
+    age = _humanize_age(now_ts, tx.timestamp) if tx.timestamp else "—"
+    failed_tag = " <i>(failed)</i>" if tx.is_failed else ""
+    return (
+        f"  {status} <code>{escape(_short_sig(tx.signature))}</code> "
+        f"<i>({escape(age)})</i>{failed_tag}"
+    )
+
+
+def _render_solana_wallet(
+    info: SolanaWalletInfo,
+    sol_price: float,
+    emojis: PremiumEmojis | None = None,
+) -> str:
+    """HTML body for ``/wallet`` when the input is a Solana address.
+
+    ``sol_price`` is the current SOL/USD rate; pass ``0.0`` to hide the
+    USD column (CoinPaprika down, etc.).
+    """
+    e = emojis if emojis is not None else default_premium_emojis()
+    now = int(datetime.now(UTC).timestamp())
+    usd_total = info.balance_sol * sol_price if sol_price > 0 else 0.0
+
+    lines: list[str] = [
+        f"{e.wallet} <b>Wallet</b> "
+        f"<code>{escape(_short_sol_addr(info.address))}</code>",
+        "",
+    ]
+    if usd_total > 0:
+        lines.append(
+            f"{e.diamond} <b>Total:</b> ≈ {escape(_fmt_usd_compact(usd_total))}"
+        )
+        lines.append("")
+
+    usd_str = (
+        f"  ≈ {escape(_fmt_usd_compact(usd_total))}"
+        if usd_total > 0
+        else ""
+    )
+    lines.append(f"{e.diamond} <b>Balances</b>")
+    lines.append(
+        f"  <b>{'Solana':<10}</b> "
+        f"<code>{escape(_fmt_native(info.balance_sol))} SOL</code>"
+        f"{usd_str}"
+    )
+
+    lines.append("")
+    lines.append(f"{e.wallet_activity} <b>Activity</b>")
+    if info.last_tx_at is not None:
+        lines.append(
+            f"  Last seen: <i>{escape(_humanize_age(now, info.last_tx_at))}</i> "
+            f"<i>on Solana</i>"
+        )
+    else:
+        lines.append("  Last seen: <i>never</i>")
+
+    if info.recent:
+        lines.append("")
+        lines.append(
+            f"{e.clock} <b>Recent transactions</b> <i>· Solana</i>"
+        )
+        lines.extend(_render_solana_wallet_tx(tx, now) for tx in info.recent)
+    return "\n".join(lines)
+
+
+async def _fetch_sol_price(paprika: CoinPaprikaClient | None) -> float:
+    """Return the current SOL/USD price, or 0.0 when unavailable.
+
+    Wraps the CoinPaprika snapshot so callers can treat a missing
+    price as "render without the USD column" without sprinkling
+    try/except across the handler.
+    """
+    if paprika is None:
+        return 0.0
+    try:
+        snap = await paprika.fetch_price_snapshot("SOL")
+    except Exception:  # noqa: BLE001
+        logger.exception("solana: SOL price lookup failed")
+        return 0.0
+    if snap is None or snap.price_usd <= 0:
+        return 0.0
+    return float(snap.price_usd)
+
+
 async def _fetch_native_prices(
     paprika: CoinPaprikaClient | None, symbols: Iterable[str]
 ) -> dict[str, float]:
@@ -1001,8 +1108,62 @@ async def _fetch_native_prices(
     return {sym: price for r in results if r is not None for sym, price in (r,)}
 
 
+async def _cmd_wallet_solana(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    address: str,
+) -> None:
+    """Solana branch of ``/wallet``. Always called via :func:`cmd_wallet`."""
+    msg = update.effective_message
+    chat = update.effective_chat
+    assert msg is not None and chat is not None  # checked by caller
+    solana: SolanaClient | None = context.bot_data.get("solana")
+    if solana is None:
+        await msg.reply_text(
+            "Solana lookup isn't available — the Solana RPC client "
+            "failed to initialise. Check the bot logs.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    paprika: CoinPaprikaClient | None = context.bot_data.get("paprika")
+    await _typing(context, chat.id)
+    info, sol_price = await asyncio.gather(
+        solana.fetch_wallet(address),
+        _fetch_sol_price(paprika),
+    )
+    if info is None:
+        await msg.reply_text(
+            "Couldn't reach Solana RPC for that wallet. Try again in a "
+            "minute, or set <code>SOLANA_RPC_URL</code> to a paid endpoint "
+            "if the public RPC is rate-limiting.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    settings: Settings = context.bot_data["settings"]
+    emojis = _resolve_premium_emojis(settings)
+    await msg.reply_text(
+        _render_solana_wallet(info, sol_price, emojis),
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+        reply_markup=_brand_keyboard(settings),
+    )
+
+
 async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Reply with a multichain wallet summary card."""
+    """Reply with a multichain wallet summary card.
+
+    Address handling falls into three buckets:
+
+    * ``0x…`` (EVM) → Etherscan V2 fan-out across :data:`CHAINS`.
+    * ENS-shaped name (``foo.eth``) → ENSIdeas resolve to ``0x…`` then
+      same EVM path.
+    * Base58 (32-44 chars) → Solana JSON-RPC.
+
+    The dispatch is purely syntactic — we never speculatively call
+    both networks for an ambiguous input. ``0x``-prefixed addresses are
+    always EVM (Solana addresses never start with ``0``); everything
+    else is either an ENS name or a Solana pubkey.
+    """
     msg = update.effective_message
     chat = update.effective_chat
     if msg is None or chat is None:
@@ -1011,11 +1172,20 @@ async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not args:
         await msg.reply_text(
             "Usage: <code>/wallet 0x…</code>  "
-            "(e.g. <code>/wallet 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045</code>)",
+            "(e.g. <code>/wallet 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045</code>)\n"
+            "Also accepts ENS names (<code>vitalik.eth</code>) and Solana "
+            "base58 addresses.",
             parse_mode=ParseMode.HTML,
         )
         return
     raw_input = args[0].strip()
+    # Route Solana addresses to their own handler. Etherscan validates
+    # ``0x``-prefixed hex; Solana validates base58 32–44 chars. They
+    # never overlap (Solana excludes ``0`` and ``l`` from its alphabet,
+    # and EVM addresses start with the literal prefix ``0x``).
+    if not is_valid_address(raw_input) and is_valid_solana_address(raw_input):
+        await _cmd_wallet_solana(update, context, raw_input)
+        return
     address = raw_input
     ens_name: str | None = None
     if not is_valid_address(address):
@@ -1035,9 +1205,9 @@ async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             address = resolved
         else:
             await msg.reply_text(
-                "That doesn't look like a valid Ethereum address or ENS name. "
-                "Expected a 0x-prefixed 40-character hex string or a name "
-                "like <code>vitalik.eth</code>.",
+                "That doesn't look like a valid wallet address. Expected "
+                "either a 0x-prefixed EVM address, an ENS name like "
+                "<code>vitalik.eth</code>, or a Solana base58 address.",
                 parse_mode=ParseMode.HTML,
             )
             return
