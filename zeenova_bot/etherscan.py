@@ -169,6 +169,10 @@ class WalletInfo:
     # the renderer can label the section.
     recent_chain: Chain | None
     recent: tuple[WalletTx, ...]
+    # Unix timestamp of the wallet's first outgoing transaction on the
+    # most-active chain. ``None`` for brand-new / never-active wallets
+    # (or when the lookup was rate-limited).
+    first_tx_at: int | None = None
 
     # Convenience accessors used by both renderers and tests so the
     # "primary" (Ethereum) balance line stays trivial to read.
@@ -332,6 +336,43 @@ class EtherscanClient:
         except (TypeError, ValueError):
             return 0
 
+    async def _first_tx_at(self, chain_id: int, address: str) -> int | None:
+        """Unix timestamp of the wallet's first outgoing tx on this
+        chain, or ``None`` if it has none / the call fails.
+
+        Same ``txlist`` endpoint as :meth:`_recent_txs` but sorted
+        ascending with ``offset=1`` so we only pay for one row. This
+        is what powers the "Active since" line in the wallet card.
+        """
+        try:
+            body = await self._get(
+                chain_id,
+                {
+                    "module": "account",
+                    "action": "txlist",
+                    "address": address,
+                    "startblock": 0,
+                    "endblock": 99999999,
+                    "page": 1,
+                    "offset": 1,
+                    "sort": "asc",
+                },
+            )
+        except (httpx.HTTPError, ValueError):
+            return None
+        if not isinstance(body, dict) or str(body.get("status")) != "1":
+            return None
+        rows = body.get("result")
+        if not isinstance(rows, list) or not rows:
+            return None
+        first = rows[0]
+        if not isinstance(first, dict):
+            return None
+        try:
+            return int(first["timeStamp"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
     async def _recent_txs(
         self, chain_id: int, address: str, *, limit: int = 5
     ) -> tuple[WalletTx, ...]:
@@ -444,9 +485,16 @@ class EtherscanClient:
         active = max(balances, key=lambda cb: cb.txs_sent)
         recent_chain: Chain | None = None
         recent: tuple[WalletTx, ...] = ()
+        first_tx_at: int | None = None
         if active.txs_sent > 0:
             try:
-                recent = await self._recent_txs(active.chain.id, addr)
+                # One round-trip each: latest 5 + earliest 1. Running
+                # them concurrently keeps the extra call's latency
+                # invisible — the gather waits on the slower of the two.
+                recent, first_tx_at = await asyncio.gather(
+                    self._recent_txs(active.chain.id, addr),
+                    self._first_tx_at(active.chain.id, addr),
+                )
                 recent_chain = active.chain
             except (httpx.HTTPError, ValueError) as exc:
                 logger.debug("etherscan: recent txs failed: %s", exc)
@@ -473,6 +521,7 @@ class EtherscanClient:
             balances=balances,
             recent_chain=recent_chain,
             recent=recent,
+            first_tx_at=first_tx_at,
         )
         self._wallet_cache[addr] = info
         return info

@@ -2144,6 +2144,7 @@ def _wallet_info(
     bnb_balance_wei: int = 0,
     txs_sent: int = 1234,
     with_recent: bool = True,
+    first_tx_at: int | None = None,
 ) -> object:
     """Build a multichain :class:`WalletInfo` for handler tests.
 
@@ -2202,6 +2203,7 @@ def _wallet_info(
         balances=tuple(balances_list),
         recent_chain=eth_chain if recent else None,
         recent=recent,
+        first_tx_at=first_tx_at,
     )
 
 
@@ -2383,6 +2385,164 @@ async def test_cmd_wallet_drops_data_source_footer() -> None:
     body = _last_reply(update.effective_message)
     assert "Data:" not in body
     assert "Etherscan" not in body  # neither in body nor footer
+
+
+@pytest.mark.asyncio
+async def test_cmd_wallet_renders_active_since_when_first_tx_known() -> None:
+    """The card carries an "Active since: YYYY-MM-DD (N days)" line
+    whenever the wallet has a first-tx timestamp on its active chain.
+    Brand new wallets (``first_tx_at=None``) omit the row entirely."""
+    from zeenova_bot.handlers import cmd_wallet
+
+    # 2020-04-18 UTC, picked so the formatted date is stable across
+    # local timezones.
+    first_tx_at = 1_587_175_200  # 2020-04-18 06:00 UTC
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    etherscan.fetch_wallet = AsyncMock(
+        return_value=_wallet_info(first_tx_at=first_tx_at)
+    )
+    paprika = MagicMock()
+    paprika.fetch_price_snapshot = AsyncMock(
+        return_value=MagicMock(price_usd=2800.0)
+    )
+    update, context = _wallet_update_context(etherscan, paprika)
+    await cmd_wallet(update, context)
+    body = _last_reply(update.effective_message)
+    assert "Active since:" in body
+    assert "2020-04-18" in body
+
+
+@pytest.mark.asyncio
+async def test_cmd_wallet_omits_active_since_for_fresh_wallet() -> None:
+    """A wallet with no recorded first-tx skips the "Active since" row
+    so we don't show a placeholder for never-active addresses."""
+    from zeenova_bot.handlers import cmd_wallet
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    etherscan.fetch_wallet = AsyncMock(
+        return_value=_wallet_info(first_tx_at=None)
+    )
+    paprika = MagicMock()
+    paprika.fetch_price_snapshot = AsyncMock(
+        return_value=MagicMock(price_usd=2800.0)
+    )
+    update, context = _wallet_update_context(etherscan, paprika)
+    await cmd_wallet(update, context)
+    body = _last_reply(update.effective_message)
+    assert "Active since:" not in body
+
+
+@pytest.mark.asyncio
+async def test_cmd_wallet_collapses_zero_balance_chains() -> None:
+    """Chains whose native balance is zero are collapsed into a single
+    "Inactive on: …" line — funded chains still get their own row."""
+    from zeenova_bot.handlers import cmd_wallet
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    # ETH-only wallet: Ethereum has 3.45 ETH, every other chain is 0.
+    etherscan.fetch_wallet = AsyncMock(return_value=_wallet_info())
+    paprika = MagicMock()
+    paprika.fetch_price_snapshot = AsyncMock(
+        return_value=MagicMock(price_usd=2800.0)
+    )
+    update, context = _wallet_update_context(etherscan, paprika)
+    await cmd_wallet(update, context)
+    body = _last_reply(update.effective_message)
+    # Ethereum row renders with a tree connector + the native amount.
+    assert "Ethereum" in body
+    assert "3.4500" in body or "3.45" in body
+    # Every other chain rolls into the compact inactive line.
+    assert "Inactive on:" in body
+    # Three sample chains that should be in the inactive list.
+    assert "BSC" in body
+    assert "Polygon" in body
+    assert "Plasma" in body
+
+
+@pytest.mark.asyncio
+async def test_cmd_wallet_renders_percentages_per_chain() -> None:
+    """When multiple chains have a funded balance, each row carries
+    its USD percentage of the total — and the percentages add up to
+    ~100% across the funded rows."""
+    from zeenova_bot.etherscan import CHAINS, ChainBalance, WalletInfo
+    from zeenova_bot.handlers import cmd_wallet
+
+    eth_chain = next(c for c in CHAINS if c.id == 1)
+    # Build a wallet that's funded only on Ethereum and BSC. Pick
+    # round numbers so the expected percentages are obvious: 1 ETH @
+    # $2800 = $2800 (≈73.7%); 5 BNB @ $200 = $1000 (≈26.3%).
+    balances = []
+    for chain in CHAINS:
+        if chain.id == 1:
+            wei = 10**18
+        elif chain.id == 56:
+            wei = 5 * 10**18
+        else:
+            wei = 0
+        balances.append(
+            ChainBalance(
+                chain=chain,
+                balance_wei=wei,
+                balance=wei / 10**18,
+                txs_sent=10 if chain.id in (1, 56) else 0,
+                last_tx_at=None,
+            )
+        )
+    info = WalletInfo(
+        address="0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+        balances=tuple(balances),
+        recent_chain=eth_chain,
+        recent=(),
+        first_tx_at=None,
+    )
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    etherscan.fetch_wallet = AsyncMock(return_value=info)
+    paprika = MagicMock()
+
+    async def _price(symbol: str) -> object:
+        if symbol == "ETH":
+            return MagicMock(price_usd=2800.0)
+        if symbol == "BNB":
+            return MagicMock(price_usd=200.0)
+        return None
+
+    paprika.fetch_price_snapshot = AsyncMock(side_effect=_price)
+    update, context = _wallet_update_context(etherscan, paprika)
+    await cmd_wallet(update, context)
+    body = _last_reply(update.effective_message)
+    # Both rows show a percentage in the new tree-style grid.
+    assert "73.7%" in body
+    assert "26.3%" in body
+    # Higher-value chain renders before lower-value one.
+    assert body.index("Ethereum") < body.index("BSC")
+    # Total reflects the sum of both chains.
+    assert "Total:" in body
+    assert "3.80K" in body  # compact USD: 2800 + 1000 = 3800
+
+
+@pytest.mark.asyncio
+async def test_cmd_wallet_uses_tree_connectors_for_balance_rows() -> None:
+    """The funded-balance rows use tree connectors ``├──`` / ``└──``
+    so the card visually matches the "Not Slava" reference layout."""
+    from zeenova_bot.handlers import cmd_wallet
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    etherscan.fetch_wallet = AsyncMock(return_value=_wallet_info())
+    paprika = MagicMock()
+    paprika.fetch_price_snapshot = AsyncMock(
+        return_value=MagicMock(price_usd=2800.0)
+    )
+    update, context = _wallet_update_context(etherscan, paprika)
+    await cmd_wallet(update, context)
+    body = _last_reply(update.effective_message)
+    # Only one funded chain (Ethereum) in this fixture, so it must be
+    # the last row → uses the └── connector.
+    assert "└──" in body
 
 
 @pytest.mark.asyncio
