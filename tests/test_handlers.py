@@ -2210,6 +2210,7 @@ def _wallet_update_context(
     paprika: object | None,
     *,
     args: list[str] | None = None,
+    solana: object | None = None,
 ) -> tuple[MagicMock, MagicMock]:
     msg = MagicMock()
     msg.reply_text = AsyncMock()
@@ -2220,6 +2221,8 @@ def _wallet_update_context(
     bot_data: dict[str, object] = {"etherscan": etherscan, "settings": _settings()}
     if paprika is not None:
         bot_data["paprika"] = paprika
+    if solana is not None:
+        bot_data["solana"] = solana
     context.bot_data = bot_data
     context.args = args if args is not None else [
         "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
@@ -2283,7 +2286,7 @@ async def test_cmd_wallet_rejects_invalid_address() -> None:
     )
     await cmd_wallet(update, context)
     body = _last_reply(update.effective_message)
-    assert "valid Ethereum address or ENS name" in body
+    assert "valid wallet address" in body
     etherscan.fetch_wallet.assert_not_awaited()
 
 
@@ -2460,6 +2463,170 @@ async def test_cmd_wallet_renders_card_without_eth_price() -> None:
     # symbol and amount.
     assert "ETH" in body
     assert "Ethereum" in body
+
+
+# ---------------------------------------------------------------------------
+# /wallet — Solana branch.
+# ---------------------------------------------------------------------------
+
+
+# A real Solana pubkey (the Solana Foundation treasury) — valid base58,
+# 44 chars long. Picking a real one over a synthetic string keeps the
+# is_valid_solana_address regex honest.
+_SOL_ADDR = "GThUX1Atko4tqhN2NaiTazWSeFWMuiUvfFnyJyUghFMJ"
+
+
+def _sol_wallet_info(
+    address: str = _SOL_ADDR,
+    *,
+    balance_sol: float = 12.5,
+    recent: tuple[object, ...] = (),
+    last_tx_at: int | None = None,
+) -> object:
+    from zeenova_bot.solana import LAMPORTS_PER_SOL, SolanaWalletInfo
+
+    return SolanaWalletInfo(
+        address=address,
+        balance_lamports=int(balance_sol * LAMPORTS_PER_SOL),
+        balance_sol=balance_sol,
+        recent=recent,  # type: ignore[arg-type]
+        last_tx_at=last_tx_at,
+    )
+
+
+def _sol_tx(
+    signature: str = "5h3GthZ9X9wM4LhCpHyJ8Lc1aBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLmNoPqRsTuVwXyZ",
+    *,
+    timestamp: int = 1_700_000_000,
+    is_failed: bool = False,
+    fee_lamports: int = 5000,
+) -> object:
+    from zeenova_bot.solana import SolanaTx
+
+    return SolanaTx(
+        signature=signature,
+        timestamp=timestamp,
+        is_failed=is_failed,
+        fee_lamports=fee_lamports,
+    )
+
+
+@pytest.mark.asyncio
+async def test_cmd_wallet_routes_base58_address_to_solana_client() -> None:
+    """A base58 address bypasses Etherscan entirely and hits the Solana
+    RPC client instead — proving the dispatch happens in
+    :func:`cmd_wallet` itself rather than being a lucky upstream
+    accident."""
+    from zeenova_bot.handlers import cmd_wallet
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    etherscan.fetch_wallet = AsyncMock()
+    solana = MagicMock()
+    solana.fetch_wallet = AsyncMock(return_value=_sol_wallet_info())
+    paprika = MagicMock()
+    paprika.fetch_price_snapshot = AsyncMock(
+        return_value=MagicMock(price_usd=150.0)
+    )
+    update, context = _wallet_update_context(
+        etherscan, paprika, args=[_SOL_ADDR], solana=solana
+    )
+    await cmd_wallet(update, context)
+    # Etherscan is never touched for a base58 address.
+    etherscan.fetch_wallet.assert_not_awaited()
+    # Solana RPC receives the raw, case-sensitive base58 address.
+    solana.fetch_wallet.assert_awaited_once_with(_SOL_ADDR)
+    body = _last_reply(update.effective_message)
+    assert "Solana" in body
+    assert "SOL" in body
+    # Total uses the USD price returned by paprika.
+    assert "Total:" in body
+
+
+@pytest.mark.asyncio
+async def test_cmd_wallet_solana_renders_recent_signatures() -> None:
+    """The recent-transactions grid shows the short signature and the
+    success/fail status icon for each signature."""
+    from zeenova_bot.handlers import cmd_wallet
+
+    info = _sol_wallet_info(
+        recent=(
+            _sol_tx(
+                signature="aaaaaaaaaaaaXYZ",
+                timestamp=1_700_000_000,
+                is_failed=False,
+            ),
+            _sol_tx(
+                signature="bbbbbbbbbbbbWVU",
+                timestamp=1_699_990_000,
+                is_failed=True,
+            ),
+        ),
+        last_tx_at=1_700_000_000,
+    )
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    solana = MagicMock()
+    solana.fetch_wallet = AsyncMock(return_value=info)
+    paprika = MagicMock()
+    paprika.fetch_price_snapshot = AsyncMock(
+        return_value=MagicMock(price_usd=150.0)
+    )
+    update, context = _wallet_update_context(
+        etherscan, paprika, args=[_SOL_ADDR], solana=solana
+    )
+    await cmd_wallet(update, context)
+    body = _last_reply(update.effective_message)
+    assert "Recent transactions" in body
+    # Both signatures appear in short form.
+    assert "aaaaaa…0XYZ" in body or "aaaaaa…aXYZ" in body
+    # Success row shows the check icon; failed row shows the cross.
+    assert "✓" in body
+    assert "✗" in body
+    assert "(failed)" in body
+
+
+@pytest.mark.asyncio
+async def test_cmd_wallet_solana_handles_upstream_failure() -> None:
+    """When the Solana RPC returns ``None``, the bot replies with a
+    friendly "try again" message — no Python traceback escapes."""
+    from zeenova_bot.handlers import cmd_wallet
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    solana = MagicMock()
+    solana.fetch_wallet = AsyncMock(return_value=None)
+    paprika = MagicMock()
+    paprika.fetch_price_snapshot = AsyncMock(return_value=None)
+    update, context = _wallet_update_context(
+        etherscan, paprika, args=[_SOL_ADDR], solana=solana
+    )
+    await cmd_wallet(update, context)
+    body = _last_reply(update.effective_message)
+    assert "Couldn't reach Solana RPC" in body
+
+
+@pytest.mark.asyncio
+async def test_cmd_wallet_solana_renders_without_sol_price() -> None:
+    """When paprika has no SOL price, the card still renders — just
+    without the Total summary or per-row USD column."""
+    from zeenova_bot.handlers import cmd_wallet
+
+    etherscan = MagicMock()
+    etherscan.is_configured = MagicMock(return_value=True)
+    solana = MagicMock()
+    solana.fetch_wallet = AsyncMock(return_value=_sol_wallet_info())
+    paprika = MagicMock()
+    paprika.fetch_price_snapshot = AsyncMock(return_value=None)
+    update, context = _wallet_update_context(
+        etherscan, paprika, args=[_SOL_ADDR], solana=solana
+    )
+    await cmd_wallet(update, context)
+    body = _last_reply(update.effective_message)
+    assert "Total:" not in body
+    # Balance row still renders the native amount + SOL symbol.
+    assert "SOL" in body
+    assert "Solana" in body
 
 
 # ---------------------------------------------------------------------------
